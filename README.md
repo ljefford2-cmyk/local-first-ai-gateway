@@ -1,8 +1,8 @@
 # Local-First AI Gateway
 
-> **DRNT Gateway v0.1.0** | Implementation repo— Initial working gateway. Control-plane implementation with partial execution-plane realization. Audit, orchestration, and policy enforcement are operational. Worker sandboxing and state durability are infrastructure-ready but not runtime-active.
-> > Canonical specs: [local-first-ai-orchestration](https://github.com/ljefford2-cmyk/local-first-ai-orchestration) (v6.0) 
-> > Claim-status matrix: [`STATUS.md`](STATUS.md)
+> **DRNT Gateway v0.1.0** | Implementation repo
+> Canonical specs: [local-first-ai-orchestration](https://github.com/ljefford2-cmyk/local-first-ai-orchestration) (v6.0)
+> Claim-status matrix: [`STATUS.md`](STATUS.md)
 
 ## Repository Map
 
