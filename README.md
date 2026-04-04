@@ -1,18 +1,27 @@
 # Local-First AI Gateway
 
-Working implementation of the DRNT personal AI gateway.
+> **v0.1.0** — Initial working gateway. Control-plane implementation with partial execution-plane realization. Audit, orchestration, and policy enforcement are operational. Worker sandboxing and state durability are infrastructure-ready but not runtime-active. See [`STATUS.md`](STATUS.md) for the full claim-status-evidence matrix.
 
-Architecture specifications and governance documents are maintained in
-[local-first-ai-orchestration](https://github.com/ljefford2-cmyk/local-first-ai-orchestration).
+## Repository Map
+
+This is the **working implementation** repo. It is one of three repositories in the DRNT project:
+
+| Repository | Role | Contents |
+|------------|------|----------|
+| **[local-first-ai-gateway](https://github.com/ljefford2-cmyk/local-first-ai-gateway)** (this repo) | Working implementation | All runtime code, Docker Compose stack, tests, config |
+| [local-first-ai-orchestration](https://github.com/ljefford2-cmyk/local-first-ai-orchestration) | Architecture specifications | DRNT specs 1–7, governance documents, design rationale |
+| [Local-AI-Orchestrator](https://github.com/ljefford2-cmyk/Local-AI-Orchestrator) | Historical / governance companion | Early-stage exploration, not the canonical implementation |
+
+The specifications live in `local-first-ai-orchestration`. The code that implements them lives here. If there is ever a conflict between a spec claim and what this repo contains, [`STATUS.md`](STATUS.md) is the source of truth for what is actually built.
 
 ## Services
 
-| Service | Description |
-| --- | --- |
-| audit-log-writer | Append-only audit log. SHA-256 hash chain, JSONL on Docker volumes. |
-| orchestrator | HTTP API, job lifecycle, model routing, context packaging, capability enforcement. |
-| egress-gateway | Cloud model dispatch. Provider adapters for Anthropic, OpenAI, Google, Ollama. |
-| worker | Execution silo for sandboxed task running. |
+| Service | Description | Status |
+|---------|-------------|--------|
+| audit-log-writer | Append-only audit log. SHA-256 hash chain, JSONL on Docker volumes. | Operational |
+| orchestrator | HTTP API, job lifecycle, model routing, context packaging, capability enforcement. | Operational |
+| egress-gateway | Cloud model dispatch. Provider adapters for Anthropic, OpenAI, Google, Ollama. | Operational |
+| worker | Execution silo for sandboxed task running. | Infrastructure only — no agent code yet |
 
 ## Infrastructure
 
@@ -52,3 +61,16 @@ The `.env` file is gitignored. Only the example file is tracked. The `secrets/` 
 ```bash
 pytest tests/
 ```
+
+598 test functions across 27 files. All tests run against in-process Python objects with mocked I/O. See [`STATUS.md`](STATUS.md) for the full test taxonomy breakdown.
+
+## Known V1 Limitations
+
+- Job state, idempotency store, and rate limiter are in-memory — nothing survives a restart
+- Worker containers are not created; the sandbox preparation chain produces blueprints but does not call the Docker API
+- Egress proxy audit events accumulate in-memory, not yet wired to the durable audit log
+- Seccomp profile exists but is not applied in `docker-compose.yml`
+- No healthcheck directives in `docker-compose.yml`
+- Secrets are plain `.env` bind-mount with no rotation mechanism
+
+These are tracked in [`STATUS.md`](STATUS.md) and the [v0.1 gap closure project](https://github.com/ljefford2-cmyk/local-first-ai-gateway/issues).
