@@ -193,7 +193,7 @@
 |---|-------|--------|----------|
 | C.1 | Docker Compose multi-service deployment | Implemented | `docker-compose.yml` — 4 services (audit-log-writer, orchestrator, egress-gateway, ollama), 7 named volumes, 2 networks. |
 | C.2 | Healthcheck endpoints | **Partial** | `GET /health` exists in `main.py` and checks orchestrator, audit log, and Ollama status. However, `docker-compose.yml` has no `healthcheck:` directives on any service. No restart-on-unhealthy behavior. |
-| C.3 | Tagged release on GitHub | **Aspirational** | No `git tag` evidence. File `v0_1.0` exists in repo root but is a git ref file, not a published release. |
+| C.3 | Tagged release on GitHub | Implemented | v0.1.0 tag and GitHub release published. Visible at `https://github.com/ljefford2-cmyk/local-first-ai-gateway/releases/tag/v0.1.0`. |
 | C.4 | Docker socket attack surface mitigated | **Partial** | Docker socket is mounted read-only (`:ro` in `docker-compose.yml`). Used only for startup validation (image existence check). However, read-only Docker socket still allows container enumeration and image inspection. No AppArmor/SELinux profile restricts access further. |
 | C.5 | `.gitignore` covers sensitive files | **Partial** | `.gitignore` exists. `.env` is gitignored via `secrets/` convention. Review flagged potential gaps — verify coverage of `__pycache__`, `.pyc`, state files, and editor artifacts. |
 
