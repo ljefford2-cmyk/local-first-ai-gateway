@@ -154,11 +154,11 @@
 
 | # | Claim | Status | Evidence |
 |---|-------|--------|----------|
-| 6.8 | Worker containers actually created via Docker API | **Aspirational** | No Docker SDK calls exist anywhere in the codebase. `BlueprintEngine.generate()` produces a `SandboxBlueprint` with Docker run arguments, but nothing calls `docker.containers.run()`. The Docker socket is mounted read-only for startup validation (image existence check) only. |
-| 6.9 | Worker agent executes tasks inside sandbox | **Aspirational** | `Dockerfile` is a stub: `FROM python:3.12-slim` + `WORKDIR /work` + a comment saying "Phase 6E will extend this with actual worker agent code." No agent, no task runner, no result collection. |
-| 6.10 | Resource limits enforced at container runtime | **Aspirational** | `BlueprintEngine` computes memory/CPU limits and writes them into `SandboxBlueprint`, but no container is created to enforce them. |
-| 6.11 | Seccomp profile applied at container runtime | **Aspirational** | `seccomp-default.json` exists and is validated at startup, but is neither referenced in `docker-compose.yml` nor passed to any Docker API call (because no containers are created). |
-| 6.12 | Network isolation enforced per-worker | **Aspirational** | `EgressProxy` enforces allowlists in code, but there is no network-level enforcement (iptables, Envoy sidecar, or Docker network isolation per worker). The code comment in `egress_proxy.py` explicitly states: "This is a code-level gate (v1). A true network proxy (iptables/envoy) is v2." |
+| 6.8 | Worker containers actually created and destroyed | **Implemented** | `orchestrator/worker_executor.py` creates one-shot Docker containers from `SandboxBlueprint`. Container is created, started, waited on, result collected, then force-removed. Tested in `test_worker_executor.py`. |
+| 6.9 | Worker agent executes tasks inside container | **Implemented** | `worker/worker_agent.py` runs inside the container, reads `/inbox/task.json`, calls Ollama, writes `/outbox/result.json`. Supports `text_generation` task type. 29 tests in `test_worker_executor.py`. |
+| 6.10 | Worker lifecycle wired into job dispatch | **Implemented** | `job_manager.py` routes `route.local` tasks through `execute_in_worker()` when `WorkerExecutor` is available. Falls back to direct Ollama call otherwise. `worker.execution_started` and `worker.execution_completed` audit events emitted. |
+| 6.11 | Container resource limits enforced | **Partial** | Container resource limits (memory, pids) are applied via Docker SDK. Seccomp profile exists and is validated at startup but is not yet passed to container creation. |
+| 6.12 | Network isolation enforced per-worker | **Partial** | Workers connect to shared `drnt-internal` network. Per-worker network isolation (dedicated bridge per container) is a v2 concern. `EgressProxy` enforces allowlists at code level. |
 
 ---
 
@@ -168,7 +168,7 @@
 
 | # | Claim | Status | Evidence |
 |---|-------|--------|----------|
-| 7.1 | Comprehensive event type taxonomy | Implemented | `orchestrator/events.py` — builders for job lifecycle, WAL, egress, context, override, system, connectivity, hub state, and worker events. 598 tests across 27 files exercise these. |
+| 7.1 | Comprehensive event type taxonomy | Implemented | `orchestrator/events.py` — builders for job lifecycle, WAL, egress, context, override, system, connectivity, hub state, and worker events. 627 tests across 28 files exercise these. |
 | 7.2 | Idempotency key deduplication | Implemented | `orchestrator/idempotency_store.py` — `check_and_store()` returns existing job on duplicate key. `job_manager.py:submit_job()` checks before creating. |
 | 7.3 | Connectivity monitor with circuit breakers | Implemented | `orchestrator/connectivity_monitor.py` — per-route `RouteHealth`, three circuit states (CLOSED/OPEN/HALF_OPEN), hysteresis thresholds (2 failures → open, 3 successes → closed). Background probe loop. |
 | 7.4 | Stale job recovery on startup | Implemented | `orchestrator/stale_recovery.py` — scans non-terminal jobs, applies recovery actions by state (re-classify, re-dispatch, deliver). Re-dispatch cap of 2 per job. |
@@ -205,12 +205,13 @@
 |----------|-------|---------------|-------|
 | Spec 5 (Override Semantics) | `test_phase5a–5e.py` | 69 | Unit (mocked audit client) |
 | Spec 6 (Worker Silo) | `test_phase6a–6e.py` | 147 | Unit (no real containers) |
+| Worker Execution | `test_worker_executor.py` | 29 | Unit (mocked Docker SDK) |
 | Spec 7 (Signal Chain) | `test_spec7a–7f.py` | 181 | Unit (mocked deps) |
 | Core modules | `test_capability_registry.py`, `test_context_packager.py`, `test_demotion_engine.py`, `test_permission_checker.py`, `test_promotion_monitor.py`, `test_admin_routes.py`, `test_startup.py`, `test_banked_items.py`, `test_be_ordering.py` | 174 | Unit |
 | Integration | `test_integration_e2e.py` | 27 | Integration (mocked external services) |
-| **Total** | **27 files** | **598** | |
+| **Total** | **28 files** | **627** | |
 
-**Test taxonomy note:** All 598 tests run against in-process Python objects with mocked I/O. There are zero tests that exercise the full Docker Compose stack, hit a real Ollama instance, or make real cloud API calls. The `test_integration_e2e.py` file tests the FastAPI app with `TestClient` against mocked backends — it is integration-level but not end-to-end in the operational sense.
+**Test taxonomy note:** All 627 tests run against in-process Python objects with mocked I/O. There are zero tests that exercise the full Docker Compose stack, hit a real Ollama instance, or make real cloud API calls. The `test_integration_e2e.py` file tests the FastAPI app with `TestClient` against mocked backends — it is integration-level but not end-to-end in the operational sense.
 
 ---
 
@@ -218,6 +219,6 @@
 
 **V1 is a control-plane implementation with partial execution-plane realization.** The orchestrator, audit log, context packager, egress policy engine, override semantics, worker lifecycle preparation chain, and signal chain resilience modules are implemented and tested. The system correctly produces audit events, enforces WAL permissions, manages capability state, and handles the full job lifecycle through classification and dispatch.
 
-**What V1 is not:** a system that creates sandboxed worker containers, executes tasks inside them, or persists job state across restarts. The worker execution path is the least mature boundary. The egress audit trail has a persistence gap. The idempotency store, rate limiter, and job store are all in-memory.
+**What V1 is not:** a system that persists job state across restarts. Worker containers are created for `route.local` tasks. Cloud worker execution, per-worker network isolation, and state durability remain v2 concerns. The egress audit trail is wired to the persistent audit log writer via `AuditLogClient`. The idempotency store, rate limiter, and job store are all in-memory.
 
 **The honest version string:** "V1 control-plane implementation with partial execution-plane realization — audit, orchestration, and policy enforcement are operational; worker sandboxing and state durability are infrastructure-ready but not runtime-active."
