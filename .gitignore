@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+venv/
+.venv/
+
+# Runtime data
+*.jsonl
+drnt-audit-*.jsonl
+
+# Docker
+.docker/
+
+# Secrets — keep the example, exclude real keys
+secrets/*
+!secrets/.env.example
+.env
+
+# Claude Code artifacts
+.claude/
+*;C/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build reports (live in Claude project, not repo)
+*.docx
+*_dump.txt

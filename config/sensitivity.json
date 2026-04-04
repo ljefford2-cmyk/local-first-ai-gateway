@@ -1,0 +1,135 @@
+{
+  "sensitivity_classes": [
+    {
+      "class": "credential",
+      "hardcoded": true,
+      "action": "strip",
+      "patterns": [
+        "(?i)(api[_-]?key|api[_-]?secret|access[_-]?token|bearer\\s+)[=:\\s]+\\S+",
+        "(?i)(password|passwd|pwd)[=:\\s]+\\S+",
+        "sk-[a-zA-Z0-9]{20,}",
+        "(?i)secret[_-]?key[=:\\s]+\\S+"
+      ]
+    },
+    {
+      "class": "name",
+      "hardcoded": false,
+      "action": "strip",
+      "patterns": [
+        "\\b[A-Z][a-z]+\\s[A-Z][a-z]+\\b"
+      ],
+      "allowlist": [
+        "Context Packager",
+        "New York",
+        "Los Angeles",
+        "San Francisco",
+        "Google Chrome",
+        "Apple Watch",
+        "Machine Learning",
+        "Deep Learning",
+        "Open WebUI",
+        "Docker Desktop",
+        "Visual Studio",
+        "Monte Carlo",
+        "Windows Desktop",
+        "Signal Chain",
+        "Write Ahead",
+        "United States",
+        "North America",
+        "South America",
+        "Central America",
+        "Puerto Rico",
+        "Costa Rica",
+        "Sierra Leone",
+        "Sri Lanka",
+        "Saudi Arabia",
+        "New Zealand",
+        "South Africa",
+        "North Carolina",
+        "South Carolina",
+        "North Dakota",
+        "South Dakota",
+        "West Virginia",
+        "Rhode Island",
+        "New Hampshire",
+        "New Jersey",
+        "New Mexico",
+        "Artificial Intelligence",
+        "Natural Language",
+        "Neural Network",
+        "Random Forest",
+        "Decision Tree",
+        "Linear Regression",
+        "Gradient Descent",
+        "Large Language",
+        "Reinforcement Learning",
+        "Transfer Learning",
+        "Computer Vision",
+        "Object Detection",
+        "Image Recognition",
+        "Data Science",
+        "Version Control",
+        "Pull Request",
+        "Code Review",
+        "Unit Test",
+        "Test Suite",
+        "Virtual Machine",
+        "Web Browser",
+        "Command Line",
+        "File System",
+        "Hash Chain",
+        "Audit Log",
+        "Cloud Dispatch",
+        "Model Response",
+        "System Startup",
+        "Job Queue",
+        "Health Check",
+        "Rate Limiter",
+        "Privacy Gate",
+        "Trust Profile",
+        "Azure Functions",
+        "Amazon Web",
+        "Google Cloud",
+        "Microsoft Office",
+        "Apple Silicon",
+        "Meta Platforms",
+        "Open Source",
+        "Red Hat",
+        "Palo Alto"
+      ]
+    },
+    {
+      "class": "financial",
+      "hardcoded": false,
+      "action": "strip",
+      "patterns": [
+        "\\b\\d{4}[- ]?\\d{4}[- ]?\\d{4}[- ]?\\d{4}\\b",
+        "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+      ]
+    },
+    {
+      "class": "location",
+      "hardcoded": false,
+      "action": "generalize",
+      "patterns": [
+        "\\b\\d{5}(-\\d{4})?\\b"
+      ]
+    },
+    {
+      "class": "date",
+      "hardcoded": false,
+      "action": "generalize",
+      "patterns": [
+        "\\b\\d{1,2}/\\d{1,2}/\\d{2,4}\\b",
+        "\\b\\d{4}-\\d{2}-\\d{2}\\b"
+      ]
+    },
+    {
+      "class": "custom",
+      "hardcoded": false,
+      "action": "strip",
+      "patterns": []
+    }
+  ],
+  "default_action_on_unclassifiable": "strip"
+}

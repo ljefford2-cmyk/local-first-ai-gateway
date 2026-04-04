@@ -1,0 +1,101 @@
+services:
+  audit-log-writer:
+    build: ./audit-log-writer
+    container_name: drnt-audit-log-writer
+    environment:
+      - DRNT_AUDIT_SOCKET=/var/drnt/sockets/audit.sock
+      - DRNT_AUDIT_DIR=/var/drnt/audit
+      - DRNT_LOG_LEVEL=INFO
+    volumes:
+      - audit-socket:/var/drnt/sockets
+      - audit-logs:/var/drnt/audit
+    networks:
+      - drnt-internal
+    restart: unless-stopped
+  orchestrator:
+    build: ./orchestrator
+    container_name: drnt-orchestrator
+    environment:
+      - DRNT_AUDIT_SOCKET=/var/drnt/sockets/audit.sock
+      - DRNT_LOG_LEVEL=INFO
+      - OLLAMA_URL=http://ollama:11434
+      - EGRESS_GATEWAY_URL=http://egress-gateway:8080
+      - DRNT_RESULTS_DIR=/var/drnt/results
+      - DRNT_SENSITIVITY_CONFIG=/var/drnt/config/sensitivity.json
+      - DRNT_CONTEXT_STORE=/var/drnt/context
+      - DRNT_CAPABILITIES_CONFIG=/var/drnt/config/capabilities.json
+      - DRNT_CAPABILITIES_STATE=/var/drnt/state/capabilities.state.json
+      # Spec 6 startup validator env vars
+      - DRNT_DOCKER_SOCKET=/var/run/docker.sock
+      - DRNT_WORKER_IMAGE=drnt-worker:latest
+      - DRNT_SANDBOX_DIR=/var/drnt/workers
+      - DRNT_SECCOMP_PROFILE=/var/drnt/config/seccomp-default.json
+      - DRNT_EGRESS_CONFIG=/var/drnt/config/egress.json
+      - DRNT_AUDIT_DIR=/var/drnt/audit
+      - DRNT_EGRESS_STATE_DIR=/var/drnt/state/egress
+      # Integration test: shortened auto-accept window
+      - DRNT_AUTO_ACCEPT_WINDOW=${DRNT_AUTO_ACCEPT_WINDOW_SECONDS:-86400}
+      - DRNT_AUTO_ACCEPT_POLL_INTERVAL=${DRNT_AUTO_ACCEPT_POLL_SECONDS:-60}
+    ports:
+      - "8000:8000"
+    volumes:
+      - audit-socket:/var/drnt/sockets:ro
+      - audit-logs:/var/drnt/audit:ro
+      - results-store:/var/drnt/results
+      - ./config:/var/drnt/config:ro
+      - capability-state:/var/drnt/state
+      - drnt-context-store:/var/drnt/context
+      - sandbox-workdir:/var/drnt/workers
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - drnt-internal
+    depends_on:
+      - audit-log-writer
+      - egress-gateway
+      - ollama
+    restart: unless-stopped
+  egress-gateway:
+    build: ./egress-gateway
+    container_name: drnt-egress-gateway
+    environment:
+      - DRNT_LOG_LEVEL=INFO
+      - DRNT_SECRETS_PATH=/var/drnt/secrets/.env
+      - DRNT_CONFIG_PATH=/var/drnt/config/egress.json
+    volumes:
+      - ./config:/var/drnt/config:ro
+      - ./secrets:/var/drnt/secrets:ro
+    networks:
+      - drnt-internal
+      - drnt-external
+    restart: unless-stopped
+  ollama:
+    image: ollama/ollama
+    container_name: drnt-ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks:
+      - drnt-internal
+      - drnt-external
+    restart: unless-stopped
+volumes:
+  audit-socket:
+  audit-logs:
+  results-store:
+  ollama-data:
+  drnt-context-store:
+  capability-state:
+  sandbox-workdir:
+networks:
+  drnt-internal:
+    driver: bridge
+  drnt-external:
+    driver: bridge

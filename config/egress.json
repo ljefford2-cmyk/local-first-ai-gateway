@@ -1,0 +1,84 @@
+{
+  "routes": [
+    {
+      "route_id": "claude-sonnet-default",
+      "provider": "anthropic",
+      "endpoint_url": "https://api.anthropic.com/v1/messages",
+      "model_string": "claude-sonnet-4-*",
+      "allowed_capabilities": ["route.cloud.claude", "route.multi"],
+      "auth": {
+        "method": "bearer_token",
+        "secret_ref": "ANTHROPIC_API_KEY"
+      },
+      "constraints": {
+        "rate_limit_rpm": 30
+      },
+      "health": {
+        "check_interval_seconds": 300,
+        "timeout_ms": 30000,
+        "consecutive_failures_before_down": 3
+      },
+      "enabled": true
+    },
+    {
+      "route_id": "openai-gpt4o-default",
+      "provider": "openai",
+      "endpoint_url": "https://api.openai.com/v1/chat/completions",
+      "model_string": "gpt-4o*",
+      "allowed_capabilities": ["route.cloud.openai", "route.multi"],
+      "auth": {
+        "method": "bearer_token",
+        "secret_ref": "OPENAI_API_KEY"
+      },
+      "constraints": {
+        "rate_limit_rpm": 30
+      },
+      "health": {
+        "check_interval_seconds": 300,
+        "timeout_ms": 30000,
+        "consecutive_failures_before_down": 3
+      },
+      "enabled": true
+    },
+    {
+      "route_id": "google-gemini-default",
+      "provider": "google",
+      "endpoint_url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+      "model_string": "gemini-2.0-flash*",
+      "allowed_capabilities": ["route.cloud.gemini", "route.multi"],
+      "auth": {
+        "method": "api_key_param",
+        "secret_ref": "GOOGLE_API_KEY"
+      },
+      "constraints": {
+        "rate_limit_rpm": 30
+      },
+      "health": {
+        "check_interval_seconds": 300,
+        "timeout_ms": 30000,
+        "consecutive_failures_before_down": 3
+      },
+      "enabled": true
+    },
+    {
+      "route_id": "ollama-llama3-local",
+      "provider": "ollama",
+      "endpoint_url": "http://ollama:11434/api/generate",
+      "model_string": "llama3.1:8b",
+      "allowed_capabilities": ["route.local"],
+      "auth": {
+        "method": "none",
+        "secret_ref": null
+      },
+      "constraints": {
+        "rate_limit_rpm": 120
+      },
+      "health": {
+        "check_interval_seconds": 60,
+        "timeout_ms": 10000,
+        "consecutive_failures_before_down": 3
+      },
+      "enabled": true
+    }
+  ]
+}

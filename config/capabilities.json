@@ -1,0 +1,415 @@
+{
+  "route.local": {
+    "capability_id": "route.local",
+    "capability_name": "Local Ollama Dispatch",
+    "capability_type": "governing",
+    "desired_wal_level": 0,
+    "max_wal": 2,
+    "declared_pipeline": [
+      {"capability_id": "memory.read", "dependency_mode": "optional"},
+      {"capability_id": "notify.phone", "dependency_mode": "best_effort"},
+      {"capability_id": "notify.watch", "dependency_mode": "best_effort"}
+    ],
+    "provider_dependencies": null,
+    "action_policies": {
+      "0": {
+        "dispatch_local": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "select_model": {"review_gate": "pre_action", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "deliver_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "format_result": "blocked",
+        "auto_retry": "blocked"
+      },
+      "1": {
+        "dispatch_local": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "select_model": {"review_gate": "pre_action", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "deliver_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "format_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "auto_retry": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": true, "max_retries": 2, "same_capability_only": true}}
+      },
+      "2": {
+        "dispatch_local": {"review_gate": "post_action", "cost_gate_usd": null, "retry_policy": {"allowed": true, "max_retries": 3, "same_capability_only": true}},
+        "select_model": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "deliver_result": {"review_gate": "post_action", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "format_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "auto_retry": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": true, "max_retries": 3, "same_capability_only": true}}
+      },
+      "3": {}
+    },
+    "promotion_criteria": {
+      "0_to_1": {"evaluable_outcomes": 30, "calendar_span_days": 7, "approval_score_min": 0.95, "zero_strip_failures": true, "zero_cancel_redirect": true},
+      "1_to_2": {"evaluable_outcomes": 100, "calendar_span_days": 30, "approval_score_min": 0.98, "zero_incidents": true, "edge_case_count_min": 1},
+      "2_to_3": null
+    }
+  },
+  "route.cloud.claude": {
+    "capability_id": "route.cloud.claude",
+    "capability_name": "Claude Cloud Dispatch",
+    "capability_type": "governing",
+    "desired_wal_level": 0,
+    "max_wal": 2,
+    "declared_pipeline": [
+      {"capability_id": "context.package", "dependency_mode": "required"},
+      {"capability_id": "memory.read", "dependency_mode": "optional"},
+      {"capability_id": "notify.phone", "dependency_mode": "best_effort"},
+      {"capability_id": "notify.watch", "dependency_mode": "best_effort"}
+    ],
+    "provider_dependencies": null,
+    "action_policies": {
+      "0": {
+        "dispatch_cloud": {"review_gate": "pre_delivery", "cost_gate_usd": 0.25, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "select_model": {"review_gate": "pre_action", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "deliver_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "format_result": "blocked",
+        "auto_retry": "blocked"
+      },
+      "1": {
+        "dispatch_cloud": {"review_gate": "pre_delivery", "cost_gate_usd": 0.25, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "select_model": {"review_gate": "pre_action", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "deliver_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "format_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "auto_retry": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": true, "max_retries": 2, "same_capability_only": true}}
+      },
+      "2": {
+        "dispatch_cloud": {"review_gate": "post_action", "cost_gate_usd": 0.50, "retry_policy": {"allowed": true, "max_retries": 3, "same_capability_only": true}},
+        "select_model": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "deliver_result": {"review_gate": "post_action", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "format_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "auto_retry": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": true, "max_retries": 3, "same_capability_only": true}}
+      },
+      "3": {}
+    },
+    "promotion_criteria": {
+      "0_to_1": {"evaluable_outcomes": 30, "calendar_span_days": 7, "approval_score_min": 0.95, "zero_strip_failures": true, "zero_cancel_redirect": true},
+      "1_to_2": {"evaluable_outcomes": 100, "calendar_span_days": 30, "approval_score_min": 0.98, "zero_incidents": true, "edge_case_count_min": 1},
+      "2_to_3": null
+    }
+  },
+  "route.cloud.openai": {
+    "capability_id": "route.cloud.openai",
+    "capability_name": "OpenAI Cloud Dispatch",
+    "capability_type": "governing",
+    "desired_wal_level": 0,
+    "max_wal": 2,
+    "declared_pipeline": [
+      {"capability_id": "context.package", "dependency_mode": "required"},
+      {"capability_id": "memory.read", "dependency_mode": "optional"},
+      {"capability_id": "notify.phone", "dependency_mode": "best_effort"},
+      {"capability_id": "notify.watch", "dependency_mode": "best_effort"}
+    ],
+    "provider_dependencies": null,
+    "action_policies": {
+      "0": {
+        "dispatch_cloud": {"review_gate": "pre_delivery", "cost_gate_usd": 0.25, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "select_model": {"review_gate": "pre_action", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "deliver_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "format_result": "blocked",
+        "auto_retry": "blocked"
+      },
+      "1": {
+        "dispatch_cloud": {"review_gate": "pre_delivery", "cost_gate_usd": 0.25, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "select_model": {"review_gate": "pre_action", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "deliver_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "format_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "auto_retry": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": true, "max_retries": 2, "same_capability_only": true}}
+      },
+      "2": {
+        "dispatch_cloud": {"review_gate": "post_action", "cost_gate_usd": 0.50, "retry_policy": {"allowed": true, "max_retries": 3, "same_capability_only": true}},
+        "select_model": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "deliver_result": {"review_gate": "post_action", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "format_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "auto_retry": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": true, "max_retries": 3, "same_capability_only": true}}
+      },
+      "3": {}
+    },
+    "promotion_criteria": {
+      "0_to_1": {"evaluable_outcomes": 30, "calendar_span_days": 7, "approval_score_min": 0.95, "zero_strip_failures": true, "zero_cancel_redirect": true},
+      "1_to_2": {"evaluable_outcomes": 100, "calendar_span_days": 30, "approval_score_min": 0.98, "zero_incidents": true, "edge_case_count_min": 1},
+      "2_to_3": null
+    }
+  },
+  "route.cloud.gemini": {
+    "capability_id": "route.cloud.gemini",
+    "capability_name": "Gemini Cloud Dispatch",
+    "capability_type": "governing",
+    "desired_wal_level": 0,
+    "max_wal": 2,
+    "declared_pipeline": [
+      {"capability_id": "context.package", "dependency_mode": "required"},
+      {"capability_id": "memory.read", "dependency_mode": "optional"},
+      {"capability_id": "notify.phone", "dependency_mode": "best_effort"},
+      {"capability_id": "notify.watch", "dependency_mode": "best_effort"}
+    ],
+    "provider_dependencies": null,
+    "action_policies": {
+      "0": {
+        "dispatch_cloud": {"review_gate": "pre_delivery", "cost_gate_usd": 0.25, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "select_model": {"review_gate": "pre_action", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "deliver_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "format_result": "blocked",
+        "auto_retry": "blocked"
+      },
+      "1": {
+        "dispatch_cloud": {"review_gate": "pre_delivery", "cost_gate_usd": 0.25, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "select_model": {"review_gate": "pre_action", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "deliver_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "format_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "auto_retry": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": true, "max_retries": 2, "same_capability_only": true}}
+      },
+      "2": {
+        "dispatch_cloud": {"review_gate": "post_action", "cost_gate_usd": 0.50, "retry_policy": {"allowed": true, "max_retries": 3, "same_capability_only": true}},
+        "select_model": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "deliver_result": {"review_gate": "post_action", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "format_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "auto_retry": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": true, "max_retries": 3, "same_capability_only": true}}
+      },
+      "3": {}
+    },
+    "promotion_criteria": {
+      "0_to_1": {"evaluable_outcomes": 30, "calendar_span_days": 7, "approval_score_min": 0.95, "zero_strip_failures": true, "zero_cancel_redirect": true},
+      "1_to_2": {"evaluable_outcomes": 100, "calendar_span_days": 30, "approval_score_min": 0.98, "zero_incidents": true, "edge_case_count_min": 1},
+      "2_to_3": null
+    }
+  },
+  "route.multi": {
+    "capability_id": "route.multi",
+    "capability_name": "Multi-Model Dispatch",
+    "capability_type": "governing",
+    "desired_wal_level": 0,
+    "max_wal": 2,
+    "declared_pipeline": [
+      {"capability_id": "context.package", "dependency_mode": "required"},
+      {"capability_id": "memory.read", "dependency_mode": "optional"},
+      {"capability_id": "notify.phone", "dependency_mode": "best_effort"},
+      {"capability_id": "notify.watch", "dependency_mode": "best_effort"}
+    ],
+    "provider_dependencies": ["route.cloud.claude", "route.cloud.openai", "route.cloud.gemini"],
+    "action_policies": {
+      "0": {
+        "dispatch_multi": {"review_gate": "pre_delivery", "cost_gate_usd": 0.50, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "select_model": {"review_gate": "pre_action", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "deliver_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "format_result": "blocked",
+        "auto_retry": "blocked"
+      },
+      "1": {
+        "dispatch_multi": {"review_gate": "pre_delivery", "cost_gate_usd": 0.50, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "select_model": {"review_gate": "pre_action", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "deliver_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "format_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "auto_retry": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": true, "max_retries": 2, "same_capability_only": true}}
+      },
+      "2": {
+        "dispatch_multi": {"review_gate": "post_action", "cost_gate_usd": 1.00, "retry_policy": {"allowed": true, "max_retries": 3, "same_capability_only": true}},
+        "select_model": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "deliver_result": {"review_gate": "post_action", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "format_result": {"review_gate": "pre_delivery", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}},
+        "auto_retry": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": true, "max_retries": 3, "same_capability_only": true}}
+      },
+      "3": {}
+    },
+    "promotion_criteria": {
+      "0_to_1": {"evaluable_outcomes": 30, "calendar_span_days": 7, "approval_score_min": 0.95, "zero_strip_failures": true, "zero_cancel_redirect": true},
+      "1_to_2": {"evaluable_outcomes": 100, "calendar_span_days": 30, "approval_score_min": 0.98, "zero_incidents": true, "edge_case_count_min": 1},
+      "2_to_3": null
+    }
+  },
+  "system.notify": {
+    "capability_id": "system.notify",
+    "capability_name": "System Notification Dispatch",
+    "capability_type": "operational",
+    "desired_wal_level": 0,
+    "max_wal": 3,
+    "declared_pipeline": [
+      {"capability_id": "notify.phone", "dependency_mode": "best_effort"},
+      {"capability_id": "notify.watch", "dependency_mode": "best_effort"}
+    ],
+    "provider_dependencies": null,
+    "action_policies": {
+      "0": {
+        "send_notification": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "1": {
+        "send_notification": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "2": {
+        "send_notification": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "3": {
+        "send_notification": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      }
+    },
+    "promotion_criteria": {
+      "0_to_1": {"evaluable_outcomes": 30, "calendar_span_days": 7, "approval_score_min": 0.95, "zero_strip_failures": true, "zero_cancel_redirect": true},
+      "1_to_2": {"evaluable_outcomes": 100, "calendar_span_days": 30, "approval_score_min": 0.98, "zero_incidents": true, "edge_case_count_min": 1},
+      "2_to_3": null
+    }
+  },
+  "context.package": {
+    "capability_id": "context.package",
+    "capability_name": "Context Packaging and Stripping",
+    "capability_type": "auxiliary",
+    "desired_wal_level": 0,
+    "max_wal": 3,
+    "declared_pipeline": [],
+    "provider_dependencies": null,
+    "action_policies": {
+      "0": {
+        "package_context": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "1": {
+        "package_context": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "2": {
+        "package_context": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "3": {
+        "package_context": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      }
+    },
+    "promotion_criteria": {
+      "0_to_1": {"evaluable_outcomes": 30, "calendar_span_days": 7, "approval_score_min": 0.95, "zero_strip_failures": true, "zero_cancel_redirect": true, "zero_egress_catches": true},
+      "1_to_2": {"evaluable_outcomes": 100, "calendar_span_days": 30, "approval_score_min": 0.98, "zero_incidents": true, "edge_case_count_min": 1, "zero_egress_catches": true},
+      "2_to_3": null
+    }
+  },
+  "memory.read": {
+    "capability_id": "memory.read",
+    "capability_name": "Vector Memory Read",
+    "capability_type": "auxiliary",
+    "desired_wal_level": 0,
+    "max_wal": 3,
+    "declared_pipeline": [],
+    "provider_dependencies": null,
+    "action_policies": {
+      "0": {
+        "read_memory": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "1": {
+        "read_memory": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "2": {
+        "read_memory": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "3": {
+        "read_memory": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      }
+    },
+    "promotion_criteria": {
+      "0_to_1": {"evaluable_outcomes": 30, "calendar_span_days": 7, "approval_score_min": 0.95, "zero_strip_failures": true, "zero_cancel_redirect": true},
+      "1_to_2": {"evaluable_outcomes": 100, "calendar_span_days": 30, "approval_score_min": 0.98, "zero_incidents": true, "edge_case_count_min": 1},
+      "2_to_3": null
+    }
+  },
+  "memory.write": {
+    "capability_id": "memory.write",
+    "capability_name": "Vector Memory Write",
+    "capability_type": "auxiliary",
+    "desired_wal_level": 0,
+    "max_wal": 3,
+    "declared_pipeline": [],
+    "provider_dependencies": null,
+    "action_policies": {
+      "0": {
+        "write_memory": "blocked"
+      },
+      "1": {
+        "write_memory": {"review_gate": "on_accept", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "2": {
+        "write_memory": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "3": {
+        "write_memory": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      }
+    },
+    "promotion_criteria": {
+      "0_to_1": {"evaluable_outcomes": 30, "calendar_span_days": 7, "approval_score_min": 0.95, "zero_strip_failures": true, "zero_cancel_redirect": true},
+      "1_to_2": {"evaluable_outcomes": 100, "calendar_span_days": 30, "approval_score_min": 0.98, "zero_incidents": true, "edge_case_count_min": 1},
+      "2_to_3": null
+    }
+  },
+  "notify.watch": {
+    "capability_id": "notify.watch",
+    "capability_name": "Watch Notification Transport",
+    "capability_type": "auxiliary",
+    "desired_wal_level": 0,
+    "max_wal": 3,
+    "declared_pipeline": [],
+    "provider_dependencies": null,
+    "action_policies": {
+      "0": {
+        "send_notification": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "1": {
+        "send_notification": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "2": {
+        "send_notification": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "3": {
+        "send_notification": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      }
+    },
+    "promotion_criteria": {
+      "0_to_1": {"evaluable_outcomes": 30, "calendar_span_days": 7, "approval_score_min": 0.95, "zero_strip_failures": true, "zero_cancel_redirect": true},
+      "1_to_2": {"evaluable_outcomes": 100, "calendar_span_days": 30, "approval_score_min": 0.98, "zero_incidents": true, "edge_case_count_min": 1},
+      "2_to_3": null
+    }
+  },
+  "notify.phone": {
+    "capability_id": "notify.phone",
+    "capability_name": "Phone Notification Transport",
+    "capability_type": "auxiliary",
+    "desired_wal_level": 0,
+    "max_wal": 3,
+    "declared_pipeline": [],
+    "provider_dependencies": null,
+    "action_policies": {
+      "0": {
+        "send_notification": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "1": {
+        "send_notification": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "2": {
+        "send_notification": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "3": {
+        "send_notification": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      }
+    },
+    "promotion_criteria": {
+      "0_to_1": {"evaluable_outcomes": 30, "calendar_span_days": 7, "approval_score_min": 0.95, "zero_strip_failures": true, "zero_cancel_redirect": true},
+      "1_to_2": {"evaluable_outcomes": 100, "calendar_span_days": 30, "approval_score_min": 0.98, "zero_incidents": true, "edge_case_count_min": 1},
+      "2_to_3": null
+    }
+  },
+  "job.queue": {
+    "capability_id": "job.queue",
+    "capability_name": "Job Queue Management",
+    "capability_type": "auxiliary",
+    "desired_wal_level": 0,
+    "max_wal": 3,
+    "declared_pipeline": [],
+    "provider_dependencies": null,
+    "action_policies": {
+      "0": {
+        "queue_job": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "1": {
+        "queue_job": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "2": {
+        "queue_job": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      },
+      "3": {
+        "queue_job": {"review_gate": "none", "cost_gate_usd": null, "retry_policy": {"allowed": false, "max_retries": 0, "same_capability_only": true}}
+      }
+    },
+    "promotion_criteria": {
+      "0_to_1": {"evaluable_outcomes": 30, "calendar_span_days": 7, "approval_score_min": 0.95, "zero_strip_failures": true, "zero_cancel_redirect": true},
+      "1_to_2": {"evaluable_outcomes": 100, "calendar_span_days": 30, "approval_score_min": 0.98, "zero_incidents": true, "edge_case_count_min": 1},
+      "2_to_3": null
+    }
+  }
+}
