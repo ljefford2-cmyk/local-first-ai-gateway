@@ -740,15 +740,54 @@ class JobManager:
         dispatch_start = time.monotonic()
 
         if routing == "local":
-            local_result = await generate_local_response(dispatch_prompt)
-            response_text = local_result.text
-            latency_ms = int((time.monotonic() - dispatch_start) * 1000)
-            token_in = local_result.token_count_in
-            token_out = local_result.token_count_out
-            cost_usd = 0.0
-            result_id = _uuid7()
-            response_hash = hashlib.sha256(response_text.encode()).hexdigest()[:16]
-            finish_reason = "stop"
+            if (
+                worker_ctx is not None
+                and self._worker_lifecycle is not None
+                and hasattr(self._worker_lifecycle, "has_executor")
+                and self._worker_lifecycle.has_executor
+            ):
+                # Branch 1: worker container path
+                try:
+                    worker_result = await self._worker_lifecycle.execute_in_worker(
+                        context=worker_ctx,
+                        prompt=dispatch_prompt,
+                        model=models[0],
+                        task_type="text_generation",
+                    )
+                    response_text = worker_result["response_text"]
+                    latency_ms = worker_result["latency_ms"]
+                    token_in = worker_result["token_in"]
+                    token_out = worker_result["token_out"]
+                    cost_usd = 0.0
+                    result_id = _uuid7()
+                    response_hash = hashlib.sha256(response_text.encode()).hexdigest()[:16]
+                    finish_reason = "stop"
+                except Exception as exc:
+                    logger.error("Worker execution failed for job %s: %s", job_id, exc)
+                    failed_event = event_job_failed(
+                        job_id=job_id,
+                        error_class="worker_execution_failed",
+                        detail=str(exc),
+                    )
+                    await self._audit.emit_durable(failed_event)
+                    job.status = JobStatus.failed.value
+                    job.error = "worker_execution_failed"
+                    if worker_ctx is not None and self._worker_lifecycle is not None:
+                        worker_ctx.status = "failed"
+                        await self._worker_lifecycle.teardown_worker(worker_ctx)
+                        self._worker_contexts.pop(job_id, None)
+                    return
+            else:
+                # Branch 2: fallback to local generate
+                local_result = await generate_local_response(dispatch_prompt)
+                response_text = local_result.text
+                latency_ms = int((time.monotonic() - dispatch_start) * 1000)
+                token_in = local_result.token_count_in
+                token_out = local_result.token_count_out
+                cost_usd = 0.0
+                result_id = _uuid7()
+                response_hash = hashlib.sha256(response_text.encode()).hexdigest()[:16]
+                finish_reason = "stop"
         else:
             # Cloud dispatch via egress gateway
             async with httpx.AsyncClient(timeout=60.0) as client:

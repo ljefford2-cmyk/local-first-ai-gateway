@@ -1,10 +1,13 @@
 """Worker lifecycle manager for Phase 6E: Worker Lifecycle Integration.
 
 Wires Phases 6A–6D into the existing DRNT pipeline. Manages the
-full prepare/teardown cycle for workers executing jobs.
+full prepare/execute/teardown cycle for workers executing jobs.
 
 The chain: manifest → validate → blueprint → proxy → startup
 becomes part of how jobs actually execute.
+
+Priority #5 addition: execute_in_worker() bridges WorkerLifecycle and
+WorkerExecutor so the orchestrator can run tasks end-to-end.
 """
 
 from __future__ import annotations
@@ -25,6 +28,8 @@ from events import (
     event_worker_prepared,
     event_worker_preparation_failed,
     event_worker_teardown,
+    event_worker_execution_started,
+    event_worker_execution_completed,
 )
 from manifest_validator import ManifestValidator, ManifestValidationResult
 from models import Job
@@ -105,6 +110,7 @@ class WorkerLifecycle:
         audit_client: AuditLogClient,
         rate_limiter: Optional[EgressRateLimiter] = None,
         state_manager: Optional[CapabilityStateManager] = None,
+        worker_executor: Optional[object] = None,
     ):
         self._validator = manifest_validator
         self._blueprint_engine = blueprint_engine
@@ -113,6 +119,7 @@ class WorkerLifecycle:
         self._audit = audit_client
         self._rate_limiter = rate_limiter or EgressRateLimiter()
         self._state_manager = state_manager
+        self._worker_executor = worker_executor
         self._active_contexts: dict[str, WorkerContext] = {}
         self._context_start_times: dict[str, float] = {}
 
@@ -215,7 +222,8 @@ class WorkerLifecycle:
         )
         rate_limiter = self._rate_limiter if policy.rate_limit_rpm > 0 else None
         egress_proxy = EgressProxy(
-            blueprint=blueprint, egress_policy=policy, rate_limiter=rate_limiter
+            blueprint=blueprint, egress_policy=policy, rate_limiter=rate_limiter,
+            audit_client=self._audit,
         )
 
         # Step 6: Build and return WorkerContext
@@ -247,6 +255,131 @@ class WorkerLifecycle:
         )
 
         return ctx
+
+    @property
+    def has_executor(self) -> bool:
+        """Whether a WorkerExecutor is available for execute_in_worker()."""
+        return self._worker_executor is not None
+
+    async def execute_in_worker(
+        self,
+        context: WorkerContext,
+        prompt: str,
+        model: str = "llama3.1:8b",
+        task_type: str = "text_generation",
+    ) -> dict:
+        """Run a task inside a sandboxed worker container.
+
+        Bridges WorkerLifecycle and WorkerExecutor: builds a task.json
+        payload matching the worker_agent schema, calls the executor,
+        and returns a result dict matching the result.json schema.
+
+        Raises:
+            WorkerPreparationError: If no executor is configured or no
+                blueprint exists, or on unexpected errors.
+            WorkerExecutionError: If the worker reports failure.
+        """
+        if self._worker_executor is None:
+            raise WorkerPreparationError("no worker_executor configured")
+        if context.blueprint is None:
+            raise WorkerPreparationError("context has no blueprint")
+
+        capability_id = context.manifest.capability_id
+
+        # Emit worker.execution_started
+        started_evt = event_worker_execution_started(
+            worker_id=context.worker_id,
+            job_id=context.job_id,
+            capability_id=capability_id,
+            container_id="pending",
+            image=context.blueprint.container_config.image,
+            task_type=task_type,
+        )
+        await self._audit.emit_durable(started_evt)
+
+        try:
+            task_payload = {
+                "task_id": context.job_id,
+                "task_type": task_type,
+                "payload": {
+                    "prompt": prompt,
+                    "model": model,
+                },
+            }
+
+            result = await self._worker_executor.execute(
+                worker_id=context.worker_id,
+                job_id=context.job_id,
+                capability_id=capability_id,
+                image=context.blueprint.container_config.image,
+                task_payload=task_payload,
+                resource_config={
+                    "memory_limit": context.blueprint.resource_config.memory_limit,
+                    "cpu_period": context.blueprint.resource_config.cpu_period,
+                    "cpu_quota": context.blueprint.resource_config.cpu_quota,
+                    "pids_limit": context.blueprint.resource_config.pids_limit,
+                },
+                security_config={
+                    "cap_drop": context.blueprint.security_config.cap_drop,
+                    "read_only_rootfs": context.blueprint.security_config.read_only_rootfs,
+                    "no_new_privileges": context.blueprint.security_config.no_new_privileges,
+                },
+                wall_timeout=context.manifest.resources.max_wall_seconds,
+            )
+
+            # Emit worker.execution_completed
+            completed_evt = event_worker_execution_completed(
+                worker_id=context.worker_id,
+                job_id=context.job_id,
+                capability_id=capability_id,
+                container_id=result.container_id or "unknown",
+                exit_code=result.exit_code,
+                success=result.success,
+                latency_ms=result.latency_ms,
+                token_count_in=result.token_count_in,
+                token_count_out=result.token_count_out,
+                error=result.error,
+            )
+            await self._audit.emit_durable(completed_evt)
+
+            if not result.success:
+                from worker_executor import WorkerExecutionError
+                raise WorkerExecutionError(
+                    f"worker execution failed: {result.error}"
+                )
+
+            return {
+                "response_text": result.response_text,
+                "token_count_in": result.token_count_in,
+                "token_count_out": result.token_count_out,
+                "latency_ms": result.latency_ms,
+                "model": result.model,
+                "container_id": result.container_id,
+            }
+
+        except WorkerPreparationError:
+            raise
+        except Exception as exc:
+            # Re-raise WorkerExecutionError as-is
+            from worker_executor import WorkerExecutionError
+            if isinstance(exc, WorkerExecutionError):
+                raise
+
+            # Unexpected error — emit failed completion, then raise
+            failed_evt = event_worker_execution_completed(
+                worker_id=context.worker_id,
+                job_id=context.job_id,
+                capability_id=capability_id,
+                container_id="unknown",
+                exit_code=-1,
+                success=False,
+                latency_ms=0,
+                error=str(exc),
+            )
+            await self._audit.emit_durable(failed_evt)
+            raise WorkerPreparationError(
+                f"unexpected error during worker execution: {exc}"
+            ) from exc
 
     async def teardown_worker(self, context: WorkerContext) -> None:
         """Cleanup after job completion.

@@ -52,7 +52,7 @@ services:
       - capability-state:/var/drnt/state
       - drnt-context-store:/var/drnt/context
       - sandbox-workdir:/var/drnt/workers
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/docker.sock:/var/run/docker.sock  # rw required for worker container creation (Priority #5)
     networks:
       - drnt-internal
     depends_on:
@@ -110,6 +110,14 @@ services:
       retries: 3
       start_period: 30s
     restart: unless-stopped
+  # Worker image — built via `docker compose build worker` but not run as a long-lived service.
+  # The orchestrator creates one-shot worker containers on demand via the Docker SDK.
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    image: drnt-worker:latest
+    profiles: ["build-only"]
 volumes:
   audit-socket:
   audit-logs:

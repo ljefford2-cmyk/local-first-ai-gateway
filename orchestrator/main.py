@@ -232,6 +232,29 @@ async def lifespan(app: FastAPI):
     )
     _rate_limiter = EgressRateLimiter()
 
+    # Priority #5: Initialize worker executor for sandboxed container execution
+    from worker_executor import WorkerExecutor
+
+    _worker_executor = None
+    try:
+        _we = WorkerExecutor(
+            sandbox_base_dir=os.environ.get("DRNT_SANDBOX_DIR", "/var/drnt/workers"),
+            ollama_url=OLLAMA_URL,
+        )
+        if not _we.check_docker_available():
+            logger.warning("Docker not available — worker executor disabled (direct dispatch fallback)")
+        else:
+            _worker_image = os.environ.get("DRNT_WORKER_IMAGE", "drnt-worker:latest")
+            if not _we.check_image_exists(_worker_image):
+                logger.warning(
+                    "Worker image %s not found — build with: docker compose build worker",
+                    _worker_image,
+                )
+            else:
+                _worker_executor = _we
+    except Exception:
+        logger.warning("Worker executor init failed — falling back to direct dispatch", exc_info=True)
+
     _worker_lifecycle = WorkerLifecycle(
         manifest_validator=_manifest_validator,
         blueprint_engine=_blueprint_engine,
@@ -240,8 +263,12 @@ async def lifespan(app: FastAPI):
         audit_client=audit_client,
         rate_limiter=_rate_limiter,
         state_manager=_state_manager,
+        worker_executor=_worker_executor,
     )
-    logger.info("Worker lifecycle initialized")
+    logger.info(
+        "Worker lifecycle initialized (executor=%s)",
+        "active" if _worker_executor is not None else "none — direct dispatch fallback",
+    )
 
     # Phase 7C: Initialize connectivity monitor
     from connectivity_monitor import ConnectivityMonitor

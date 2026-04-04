@@ -802,6 +802,78 @@ def event_worker_preparation_failed(
     )
 
 
+# ---------- Worker Execution event builders (Priority #5) ----------
+
+
+def event_worker_execution_started(
+    worker_id: str,
+    job_id: str,
+    capability_id: str,
+    container_id: str,
+    image: str,
+    task_type: str,
+) -> dict[str, Any]:
+    """Build a worker.execution_started event.
+
+    Emitted when a worker container begins executing a task.
+    task_type matches the task.json task_type field (e.g. 'text_generation').
+    """
+    return build_event(
+        event_type="worker.execution_started",
+        job_id=job_id,
+        capability_id=capability_id,
+        source="orchestrator",
+        payload={
+            "worker_id": worker_id,
+            "job_id": job_id,
+            "capability_id": capability_id,
+            "container_id": container_id,
+            "image": image,
+            "task_type": task_type,
+        },
+    )
+
+
+def event_worker_execution_completed(
+    worker_id: str,
+    job_id: str,
+    capability_id: str,
+    container_id: str,
+    exit_code: int,
+    success: bool,
+    latency_ms: int,
+    token_count_in: int = 0,
+    token_count_out: int = 0,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Build a worker.execution_completed event.
+
+    Emitted when a worker container finishes executing a task.
+    token_count_in/token_count_out mirror result.json fields from the worker agent.
+    The error key is only included when error is not None.
+    """
+    payload: dict[str, Any] = {
+        "worker_id": worker_id,
+        "job_id": job_id,
+        "capability_id": capability_id,
+        "container_id": container_id,
+        "exit_code": exit_code,
+        "success": success,
+        "latency_ms": latency_ms,
+        "token_count_in": token_count_in,
+        "token_count_out": token_count_out,
+    }
+    if error is not None:
+        payload["error"] = error
+    return build_event(
+        event_type="worker.execution_completed",
+        job_id=job_id,
+        capability_id=capability_id,
+        source="orchestrator",
+        payload=payload,
+    )
+
+
 # ---------- Phase 7A event builders ----------
 
 
