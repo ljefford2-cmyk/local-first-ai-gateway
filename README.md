@@ -83,7 +83,6 @@ pytest tests/
 - Job state, idempotency store, and rate limiter are in-memory — nothing survives a restart (v0.2 item)
 - Worker containers not yet created by Docker API — the sandbox preparation chain produces blueprints only
 - ConnectivityMonitor not wired into dispatch — probes run but results are not used for routing decisions
-- Egress proxy audit events accumulate in-memory, not yet routed to the durable audit log
 - Seccomp profile exists but is not applied via `security_opt` in `docker-compose.yml`
 - Secrets are plain `.env` bind-mount with no rotation mechanism
 
