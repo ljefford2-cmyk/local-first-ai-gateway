@@ -859,10 +859,12 @@ class TestLifecycleSeccompNetworkPlumbing:
 
     @pytest.mark.asyncio
     async def test_passes_seccomp_profile_from_env(self, tmp_path):
-        """execute_in_worker passes DRNT_SECCOMP_PROFILE to executor."""
+        """execute_in_worker passes DRNT_SECCOMP_PROFILE to executor when path is non-default."""
         lifecycle, audit, executor = _make_lifecycle_with_executor(tmp_path)
         job = _make_job()
         ctx = await lifecycle.prepare_worker(job)
+        # Set a non-default seccomp path so the env var is honoured
+        ctx.blueprint.security_config.seccomp_profile_path = "/custom/seccomp.json"
         audit.clear()
 
         with patch.dict(os.environ, {"DRNT_SECCOMP_PROFILE": "/var/drnt/config/seccomp-default.json"}):
@@ -886,7 +888,7 @@ class TestLifecycleSeccompNetworkPlumbing:
 
     @pytest.mark.asyncio
     async def test_passes_egress_proxy_network_for_nonempty_egress(self, tmp_path):
-        """Workers with non-empty egress_allow get network_mode='drnt-egress-proxy'."""
+        """Workers with non-empty egress_allow get network_mode='drnt-internal'."""
         from egress_proxy import EgressPolicy
 
         lifecycle, audit, executor = _make_lifecycle_with_executor(tmp_path)
@@ -905,7 +907,7 @@ class TestLifecycleSeccompNetworkPlumbing:
         await lifecycle.execute_in_worker(ctx, prompt="hello")
 
         sc = executor.last_kwargs["security_config"]
-        assert sc["network_mode"] == "drnt-egress-proxy"
+        assert sc["network_mode"] == "drnt-internal"
 
 
 # ---------------------------------------------------------------------------

@@ -130,7 +130,7 @@ class BlueprintEngine:
     def _build_network_config(self, manifest: RuntimeManifest) -> ContainerNetworkConfig:
         """Determine network mode from egress_allow."""
         if manifest.network.egress_allow:
-            network_mode = "drnt-egress-proxy"
+            network_mode = "drnt-internal"
         else:
             network_mode = "none"
         return ContainerNetworkConfig(

@@ -573,7 +573,7 @@ class TestIntegration:
         m = _valid_cloud_manifest()
         bp = _make_blueprint(m, v)
         assert bp.network_config.egress_allow == ["api.anthropic.com:443"]
-        assert bp.network_config.network_mode == "drnt-egress-proxy"
+        assert bp.network_config.network_mode == "drnt-internal"
 
 
 # =============================================================================

@@ -445,7 +445,7 @@ class TestPipelineIntegration:
         assert ctx.blueprint is not None
         assert ctx.blueprint.capability_id == "route.cloud.general"
         # The blueprint has network_mode for egress proxy routing
-        assert ctx.blueprint.network_config.network_mode == "drnt-egress-proxy"
+        assert ctx.blueprint.network_config.network_mode == "drnt-internal"
 
 
 # ---------------------------------------------------------------------------

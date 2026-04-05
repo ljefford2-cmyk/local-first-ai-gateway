@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+markers = [
+    "e2e: end-to-end tests against the live Docker stack",
+]
+asyncio_mode = "auto"

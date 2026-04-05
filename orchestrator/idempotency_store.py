@@ -80,10 +80,49 @@ class IdempotencyStore:
 
     # -- internal helpers --------------------------------------------------
 
+    def _purge_terminal_keys(self) -> int:
+        """Delete idempotency keys referencing terminal or missing jobs.
+
+        Every prompt is a new routing event.  Once a job reaches terminal
+        state (delivered/failed) the idempotency key is architecturally
+        invalid — honouring it would bind a fresh prompt to a stale routing
+        decision from a previous session.  Keys whose job no longer exists
+        in the jobs table are equally stale.
+
+        Returns the number of purged keys.
+        """
+        if self._db is None:
+            return 0
+        try:
+            # Single SQL operation: delete idem keys where the referenced
+            # job is terminal or no longer exists in the jobs table.
+            cursor = self._db.execute(
+                """DELETE FROM state
+                   WHERE key LIKE ?
+                     AND NOT EXISTS (
+                         SELECT 1 FROM jobs
+                          WHERE jobs.job_id = json_extract(state.value, '$.job_id')
+                            AND jobs.status NOT IN ('delivered', 'failed')
+                     )""",
+                (_KEY_PREFIX + "%",),
+            )
+            count = cursor.rowcount
+            self._db.commit()
+            return count
+        except Exception:
+            logger.warning("Failed to purge terminal idempotency keys", exc_info=True)
+            return 0
+
     def _load_from_db(self) -> None:
         """Populate the in-memory cache from the database."""
         if self._db is None:
             return
+
+        # Purge stale keys before loading — see _purge_terminal_keys docstring.
+        purged = self._purge_terminal_keys()
+        if purged:
+            logger.info("Startup: purged %d stale idempotency key(s) from previous sessions", purged)
+
         try:
             cursor = self._db.execute(
                 "SELECT key, value FROM state WHERE key LIKE ?",

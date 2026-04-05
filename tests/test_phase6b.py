@@ -240,11 +240,11 @@ class TestBlueprintGeneration:
         assert inbox_mount.read_only is True
 
     def test_network_mode_egress_proxy(self):
-        """Non-empty egress_allow sets network_mode to drnt-egress-proxy."""
+        """Non-empty egress_allow sets network_mode to drnt-internal."""
         v, _, _ = _make_validator()
         m = _valid_local_manifest()  # has egress_allow=["ollama:11434"]
         bp, _ = _validate_and_generate(m, v)
-        assert bp.network_config.network_mode == "drnt-egress-proxy"
+        assert bp.network_config.network_mode == "drnt-internal"
 
     def test_network_mode_none_when_no_egress(self):
         """Empty egress_allow sets network_mode to none."""
@@ -489,7 +489,7 @@ class TestIntegrationWith6A:
         assert isinstance(bp, SandboxBlueprint)
         assert bp.manifest_id == m.manifest_id
         assert bp.capability_id == "route.local"
-        assert bp.network_config.network_mode == "drnt-egress-proxy"
+        assert bp.network_config.network_mode == "drnt-internal"
         assert bp.security_config.read_only_rootfs is True
         assert "ALL" in bp.security_config.cap_drop
 
