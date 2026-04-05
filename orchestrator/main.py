@@ -8,6 +8,7 @@ Startup validates capabilities, reconciles WAL levels, and checks model versions
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -240,6 +241,7 @@ async def lifespan(app: FastAPI):
         _we = WorkerExecutor(
             sandbox_base_dir=os.environ.get("DRNT_SANDBOX_DIR", "/var/drnt/workers"),
             ollama_url=OLLAMA_URL,
+            sandbox_volume_name=os.environ.get("DRNT_SANDBOX_VOLUME"),
         )
         if not _we.check_docker_available():
             logger.warning("Docker not available — worker executor disabled (direct dispatch fallback)")

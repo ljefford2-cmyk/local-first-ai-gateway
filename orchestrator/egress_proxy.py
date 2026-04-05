@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Optional
 from sandbox_blueprint import SandboxBlueprint
 
 if TYPE_CHECKING:
+    from audit_client import AuditLogClient
     from egress_rate_limiter import EgressRateLimiter
 
 
@@ -64,12 +65,14 @@ class EgressProxy:
         ollama_host: str = DEFAULT_OLLAMA_HOST,
         ollama_port: int = DEFAULT_OLLAMA_PORT,
         rate_limiter: Optional[EgressRateLimiter] = None,
+        audit_client: Optional[AuditLogClient] = None,
     ):
         self._blueprint = blueprint
         self._policy = egress_policy
         self._ollama_host = ollama_host
         self._ollama_port = ollama_port
         self._rate_limiter = rate_limiter
+        self._audit_client = audit_client
         self._events: list[dict] = []
 
     @property
@@ -177,3 +180,46 @@ class EgressProxy:
             )
 
         self._events.append(evt)
+
+    async def log_request_durable(
+        self, target_host: str, target_port: int, decision: EgressDecision
+    ) -> None:
+        """Emit audit event and persist via the audit log writer.
+
+        Like log_request(), but also sends the event through the
+        AuditLogClient for durable persistence. Falls back to
+        in-memory-only if no audit client is configured.
+
+        The in-memory list is always updated (used by teardown_worker
+        for egress summary counts).
+        """
+        from egress_events import event_egress_authorized, event_egress_denied
+
+        if decision.allowed:
+            evt = event_egress_authorized(
+                blueprint_id=self._blueprint.blueprint_id,
+                capability_id=self._blueprint.capability_id,
+                target_host=target_host,
+                target_port=target_port,
+                method="egress_check",
+                matched_rule=decision.matched_rule or "",
+            )
+        else:
+            evt = event_egress_denied(
+                blueprint_id=self._blueprint.blueprint_id,
+                capability_id=self._blueprint.capability_id,
+                target_host=target_host,
+                target_port=target_port,
+                method="egress_check",
+                denial_reason=decision.reason,
+            )
+
+        self._events.append(evt)
+
+        if self._audit_client is not None:
+            await self._audit_client.emit_durable(evt)
+
+    @property
+    def audit_client(self) -> Optional[AuditLogClient]:
+        """The audit client, if configured."""
+        return self._audit_client

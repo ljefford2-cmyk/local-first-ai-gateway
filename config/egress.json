@@ -15,7 +15,7 @@
       },
       "health": {
         "check_interval_seconds": 300,
-        "timeout_ms": 30000,
+        "timeout_ms": 90000,
         "consecutive_failures_before_down": 3
       },
       "enabled": true
@@ -35,7 +35,7 @@
       },
       "health": {
         "check_interval_seconds": 300,
-        "timeout_ms": 30000,
+        "timeout_ms": 90000,
         "consecutive_failures_before_down": 3
       },
       "enabled": true
@@ -55,7 +55,7 @@
       },
       "health": {
         "check_interval_seconds": 300,
-        "timeout_ms": 30000,
+        "timeout_ms": 90000,
         "consecutive_failures_before_down": 3
       },
       "enabled": true

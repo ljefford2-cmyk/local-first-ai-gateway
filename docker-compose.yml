@@ -39,6 +39,7 @@ services:
       - DRNT_EGRESS_CONFIG=/var/drnt/config/egress.json
       - DRNT_AUDIT_DIR=/var/drnt/audit
       - DRNT_EGRESS_STATE_DIR=/var/drnt/state/egress
+      - DRNT_SANDBOX_VOLUME=drnt-sandbox-workdir
       # Integration test: shortened auto-accept window
       - DRNT_AUTO_ACCEPT_WINDOW=${DRNT_AUTO_ACCEPT_WINDOW_SECONDS:-86400}
       - DRNT_AUTO_ACCEPT_POLL_INTERVAL=${DRNT_AUTO_ACCEPT_POLL_SECONDS:-60}
@@ -56,9 +57,12 @@ services:
     networks:
       - drnt-internal
     depends_on:
-      - audit-log-writer
-      - egress-gateway
-      - ollama
+      audit-log-writer:
+        condition: service_healthy
+      egress-gateway:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
       interval: 15s
@@ -80,7 +84,7 @@ services:
       - drnt-internal
       - drnt-external
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('localhost',8080)); s.close()\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\""]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -104,7 +108,7 @@ services:
       - drnt-internal
       - drnt-external
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:11434/ || exit 1"]
+      test: ["CMD", "ollama", "list"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -126,8 +130,11 @@ volumes:
   drnt-context-store:
   capability-state:
   sandbox-workdir:
+    name: drnt-sandbox-workdir
 networks:
   drnt-internal:
+    name: drnt-internal
     driver: bridge
   drnt-external:
+    name: drnt-external
     driver: bridge

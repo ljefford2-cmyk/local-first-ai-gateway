@@ -756,8 +756,8 @@ class JobManager:
                     )
                     response_text = worker_result["response_text"]
                     latency_ms = worker_result["latency_ms"]
-                    token_in = worker_result["token_in"]
-                    token_out = worker_result["token_out"]
+                    token_in = worker_result["token_count_in"]
+                    token_out = worker_result["token_count_out"]
                     cost_usd = 0.0
                     result_id = _uuid7()
                     response_hash = hashlib.sha256(response_text.encode()).hexdigest()[:16]

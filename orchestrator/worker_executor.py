@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -55,11 +56,14 @@ class WorkerExecutor:
         sandbox_base_dir: str = "/var/drnt/workers",
         docker_url: str = "unix:///var/run/docker.sock",
         ollama_url: str = "http://ollama:11434",
+        sandbox_volume_name: Optional[str] = None,
     ) -> None:
         self.sandbox_base_dir = Path(sandbox_base_dir)
         self.docker_url = docker_url
         self.ollama_url = ollama_url
+        self.sandbox_volume_name = sandbox_volume_name
         self._client: Optional[docker.DockerClient] = None
+        self._host_sandbox_base: Optional[str] = None
 
     # -- Docker client ------------------------------------------------------
 
@@ -67,6 +71,23 @@ class WorkerExecutor:
         if self._client is None:
             self._client = docker.DockerClient(base_url=self.docker_url)
         return self._client
+
+    # -- Host path resolution ------------------------------------------------
+
+    def _get_host_sandbox_base(self) -> Optional[str]:
+        """Resolve the Docker volume's host mountpoint for sibling-container mounts."""
+        if self._host_sandbox_base is not None:
+            return self._host_sandbox_base
+        if self.sandbox_volume_name is None:
+            return None
+        try:
+            client = self._get_client()
+            vol = client.volumes.get(self.sandbox_volume_name)
+            self._host_sandbox_base = vol.attrs["Mountpoint"]
+            return self._host_sandbox_base
+        except Exception:
+            logger.warning("Could not resolve host mountpoint for volume %s", self.sandbox_volume_name)
+            return None
 
     # -- Sandbox directory management ---------------------------------------
 
@@ -76,6 +97,8 @@ class WorkerExecutor:
         outbox = sandbox / "outbox"
         inbox.mkdir(parents=True, exist_ok=True)
         outbox.mkdir(parents=True, exist_ok=True)
+        # Worker runs as non-root (drnt user); outbox must be writable.
+        os.chmod(outbox, 0o777)
         return sandbox
 
     def _write_task(self, sandbox_dir: Path, task_payload: dict[str, Any]) -> None:
@@ -146,8 +169,17 @@ class WorkerExecutor:
 
             container_name = f"drnt-worker-{job_id[:12]}-{worker_id[:8]}"
 
-            inbox_path = str(sandbox_dir / "inbox")
-            outbox_path = str(sandbox_dir / "outbox")
+            # Resolve host-side paths for sibling-container bind mounts.
+            # Inside the orchestrator, sandbox_dir is a container path backed
+            # by a Docker volume.  The Docker daemon needs the host path.
+            host_base = self._get_host_sandbox_base()
+            if host_base is not None:
+                relative = sandbox_dir.relative_to(self.sandbox_base_dir)
+                inbox_path = f"{host_base}/{relative}/inbox"
+                outbox_path = f"{host_base}/{relative}/outbox"
+            else:
+                inbox_path = str(sandbox_dir / "inbox")
+                outbox_path = str(sandbox_dir / "outbox")
 
             # Security: build security_options and tmpfs from config
             mem_limit = security_config.get("mem_limit", "256m")
