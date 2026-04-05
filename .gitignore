@@ -10,6 +10,7 @@ venv/
 # Runtime data
 *.jsonl
 drnt-audit-*.jsonl
+*.db
 
 # Docker
 .docker/

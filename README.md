@@ -35,7 +35,8 @@ The specifications live in `local-first-ai-orchestration`. The code that impleme
 | audit-log-writer | Append-only audit log. SHA-256 hash chain, JSONL on Docker volumes. | Operational |
 | orchestrator | HTTP API, job lifecycle, model routing, context packaging, capability enforcement. | Operational |
 | egress-gateway | Cloud model dispatch. Provider adapters for Anthropic, OpenAI, Google, Ollama. | Operational |
-| worker | Execution silo for sandboxed task running. | Infrastructure only — no agent code yet |
+| worker-proxy | Docker sidecar — sole holder of the Docker socket. Exposes container lifecycle over HTTP. | Operational |
+| worker | Execution silo for sandboxed task running. One-shot containers created via worker-proxy. | Operational |
 
 ## Infrastructure
 
@@ -76,12 +77,11 @@ The `.env` file is gitignored. Only the example file is tracked. The `secrets/` 
 pytest tests/
 ```
 
-647 tests across 30 files (629 passing, 18 skipped e2e integration). All unit tests run against in-process Python objects with mocked I/O. See [`STATUS.md`](STATUS.md) for the full test taxonomy breakdown.
+735 tests across 34 files (717 passing, 18 skipped e2e integration). All unit tests run against in-process Python objects with mocked I/O. See [`STATUS.md`](STATUS.md) for the full test taxonomy breakdown.
 
 ## Known V1 Limitations
 
-- Job state, idempotency store, and rate limiter are in-memory — nothing survives a restart (v0.2 item)
-- Worker containers not yet created by Docker API — the sandbox preparation chain produces blueprints only
+- Rate limiter is in-memory — counters reset on restart (v0.2 item)
 - Seccomp profile exists but is not applied via `security_opt` in `docker-compose.yml`
 - Secrets are plain `.env` bind-mount with no rotation mechanism
 

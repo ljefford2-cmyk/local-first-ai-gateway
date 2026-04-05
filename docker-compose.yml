@@ -32,7 +32,7 @@ services:
       - DRNT_CAPABILITIES_CONFIG=/var/drnt/config/capabilities.json
       - DRNT_CAPABILITIES_STATE=/var/drnt/state/capabilities.state.json
       # Spec 6 startup validator env vars
-      - DRNT_DOCKER_SOCKET=/var/run/docker.sock
+      - DRNT_WORKER_PROXY_URL=http://worker-proxy:9100
       - DRNT_WORKER_IMAGE=drnt-worker:latest
       - DRNT_SANDBOX_DIR=/var/drnt/workers
       - DRNT_SECCOMP_PROFILE=/var/drnt/config/seccomp-default.json
@@ -40,6 +40,7 @@ services:
       - DRNT_AUDIT_DIR=/var/drnt/audit
       - DRNT_EGRESS_STATE_DIR=/var/drnt/state/egress
       - DRNT_SANDBOX_VOLUME=drnt-sandbox-workdir
+      - DRNT_DB_PATH=/data/drnt.db
       # Integration test: shortened auto-accept window
       - DRNT_AUTO_ACCEPT_WINDOW=${DRNT_AUTO_ACCEPT_WINDOW_SECONDS:-86400}
       - DRNT_AUTO_ACCEPT_POLL_INTERVAL=${DRNT_AUTO_ACCEPT_POLL_SECONDS:-60}
@@ -53,7 +54,7 @@ services:
       - capability-state:/var/drnt/state
       - drnt-context-store:/var/drnt/context
       - sandbox-workdir:/var/drnt/workers
-      - /var/run/docker.sock:/var/run/docker.sock  # rw required for worker container creation (Priority #5)
+      - drnt-data:/data
     networks:
       - drnt-internal
     depends_on:
@@ -62,6 +63,8 @@ services:
       egress-gateway:
         condition: service_healthy
       ollama:
+        condition: service_healthy
+      worker-proxy:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
@@ -114,8 +117,27 @@ services:
       retries: 3
       start_period: 30s
     restart: unless-stopped
+  worker-proxy:
+    build: ./worker-proxy
+    container_name: drnt-worker-proxy
+    environment:
+      - DRNT_SANDBOX_VOLUME=drnt-sandbox-workdir
+      - DRNT_LOG_LEVEL=INFO
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config:/config:ro
+      - sandbox-workdir:/var/drnt/workers
+    networks:
+      - drnt-internal
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9100/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
   # Worker image — built via `docker compose build worker` but not run as a long-lived service.
-  # The orchestrator creates one-shot worker containers on demand via the Docker SDK.
+  # The worker-proxy sidecar creates one-shot worker containers on demand via its HTTP API.
   worker:
     build:
       context: ./worker
@@ -131,6 +153,7 @@ volumes:
   capability-state:
   sandbox-workdir:
     name: drnt-sandbox-workdir
+  drnt-data:
 networks:
   drnt-internal:
     name: drnt-internal

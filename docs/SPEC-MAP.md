@@ -12,7 +12,7 @@ For per-claim detail, see [STATUS.md](../STATUS.md).
 | **3 -- Context Packager** | `orchestrator` | `context_packager.py` | `config/sensitivity.json` | `orchestrator/test_context_packager.py` | Strips/generalizes PII before dispatch |
 | **4 -- Egress Policy** | `egress-gateway` + `orchestrator` | **egress-gateway:** `registry.py`, `rate_limiter.py`, `main.py`, `providers/anthropic.py`, `providers/openai.py`, `providers/google.py`, `providers/ollama.py` | `config/egress.json` | `tests/test_phase6c.py`, `tests/test_phase6d.py`, `tests/test_durable_egress_audit.py` | **orchestrator-side:** `egress_proxy.py`, `egress_rate_limiter.py`, `egress_events.py` |
 | **5 -- Human Override / WAL** | `orchestrator` | `permission_checker.py`, `demotion_engine.py`, `promotion_monitor.py`, `override_types.py`, `capability_state.py`, `capability_registry.py` | `config/capabilities.json` (`action_policies`, `promotion_criteria` sections) | `tests/test_phase5a.py` -- `test_phase5e.py`, `orchestrator/test_permission_checker.py`, `orchestrator/test_demotion_engine.py`, `orchestrator/test_promotion_monitor.py`, `orchestrator/test_capability_registry.py`, `orchestrator/test_banked_items.py` | Largest spec by test count; WAL levels gate autonomy |
-| **6 -- Worker Silo / Runtime** | `orchestrator` + `worker` | **orchestrator:** `runtime_manifest.py`, `manifest_validator.py`, `blueprint_engine.py`, `sandbox_blueprint.py`, `egress_proxy.py`, `worker_lifecycle.py`, `worker_context.py`, `worker_executor.py`, `startup_validator.py` | `config/seccomp-default.json` | `tests/test_phase6a.py` -- `test_phase6e.py`, `tests/test_worker_executor.py` | **worker:** `worker/worker_agent.py`, `worker/Dockerfile`; test_phase6c/6d shared with Spec 4 |
+| **6 -- Worker Silo / Runtime** | `orchestrator` + `worker-proxy` + `worker` | **orchestrator:** `runtime_manifest.py`, `manifest_validator.py`, `blueprint_engine.py`, `sandbox_blueprint.py`, `egress_proxy.py`, `worker_lifecycle.py`, `worker_context.py`, `worker_executor.py`, `startup_validator.py` | `config/seccomp-default.json` | `tests/test_phase6a.py` -- `test_phase6e.py`, `tests/test_worker_executor.py`, `tests/test_worker_proxy.py` | **worker-proxy:** `worker-proxy/main.py`, `worker-proxy/models.py`; **worker:** `worker/worker_agent.py`, `worker/Dockerfile`; test_phase6c/6d shared with Spec 4 |
 | **7 -- Signal Chain Resilience** | `orchestrator` | `events.py`, `idempotency_store.py`, `connectivity_monitor.py`, `stale_recovery.py`, `decay_evaluator.py`, `hub_state.py` | None (behavioral, not config-driven) | `tests/test_spec7a_events.py` -- `test_spec7f_hub_state.py` | Six sub-specs (7A--7F), each with its own test file |
 
 ## Cross-Cutting
@@ -38,10 +38,11 @@ For per-claim detail, see [STATUS.md](../STATUS.md).
 | 6 -- Worker Silo / Runtime | 6 | 176 |
 | 7 -- Signal Chain Resilience | 6 | 181 |
 | Cross-cutting (admin routes) | 1 | 18 |
-| **Total (deduplicated)** | **28** | **642** |
+| **Total (deduplicated)** | **34** | **735** |
 
 Note: `test_phase6c.py` (30 tests) and `test_phase6d.py` (32 tests) are shared between Specs 4 and 6.
 Per-spec totals count these tests under both specs; the deduplicated total counts each test once.
+Additional test files since initial tally: persistence tests (`test_job_persistence.py`, `test_idempotency_persistence.py`, `test_hub_state_persistence.py`, `test_circuit_breaker_persistence.py`), `test_connectivity_dispatch_gating.py`, `test_worker_proxy.py`, `test_integration_lifecycle.py`.
 
 ---
 

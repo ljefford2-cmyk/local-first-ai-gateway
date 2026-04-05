@@ -20,7 +20,7 @@ prepare (manifest -> validate -> blueprint -> egress proxy -> WorkerContext)
 execute_in_worker (build task.json payload)
   |
   v
-docker create / start / wait
+POST /containers/run to worker-proxy sidecar (create / start / wait / remove)
   |
   v
 read result (parse /outbox/result.json -> WorkerResult)
@@ -96,7 +96,7 @@ into the container via Docker volumes.
 | Read-only rootfs | true | Prevents container filesystem writes |
 | no-new-privileges | true | Blocks suid/sgid escalation |
 | Memory limit | 256m | Prevents OOM from affecting host |
-| PIDs limit | 256 | Prevents fork bombs |
+| PIDs limit | 64 | Prevents fork bombs |
 | User | non-root | Container image runs as unprivileged user |
 | /inbox mount | read-only | Worker cannot modify its own task |
 | /outbox mount | read-write | Only writable mount for result output |
@@ -148,7 +148,7 @@ validation blocks the orchestrator from accepting jobs (Spec 6D).
 
 | Risk | Current State | Mitigation | v2 Path |
 |---|---|---|---|
-| Docker socket (rw) | Orchestrator mounts `/var/run/docker.sock` read-write to create containers | Orchestrator is the only process with socket access; workers never see the socket | Rootless Docker or Podman with socket proxy that filters API calls |
+| Docker socket (rw) | Docker socket is mounted only on the `worker-proxy` sidecar; orchestrator has zero Docker SDK usage | Sidecar exposes a constrained HTTP API surface; GC loop removes orphaned stopped containers | Rootless Docker or Podman with socket proxy that filters API calls |
 | Shared network | All workers share `drnt-internal` bridge network | Workers have no listening ports; egress proxy validates outbound requests at code level | Per-worker network namespace with iptables rules enforced by the proxy |
 | Image trust | Worker image is built locally, not pulled from a registry | Image hash is validated at startup (Spec 6D); no `docker pull` at runtime | Image signing with Notary/cosign and admission control |
 

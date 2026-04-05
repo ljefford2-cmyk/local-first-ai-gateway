@@ -13,6 +13,7 @@ WorkerExecutor so the orchestrator can run tasks end-to-end.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Optional
 
@@ -323,6 +324,8 @@ class WorkerLifecycle:
                     "cap_drop": context.blueprint.security_config.cap_drop,
                     "read_only_rootfs": context.blueprint.security_config.read_only_rootfs,
                     "no_new_privileges": context.blueprint.security_config.no_new_privileges,
+                    "seccomp_profile": os.environ.get("DRNT_SECCOMP_PROFILE") if context.blueprint.security_config.seccomp_profile_path else None,
+                    "network_mode": context.blueprint.network_config.network_mode,
                 },
                 wall_timeout=context.manifest.resources.max_wall_seconds,
             )

@@ -6,10 +6,13 @@ Hub suspension signals prevent zombie execution on the demoted hub.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import platform
+import sqlite3
 import time
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable, Optional
 
@@ -34,11 +37,15 @@ class HubStateManager:
     on the demoted hub.
     """
 
+    _KEY_STATE = "hub:state"
+    _KEY_HEARTBEAT = "hub:last_heartbeat"
+
     def __init__(
         self,
         emit_event: Optional[Callable[[dict[str, Any]], None]] = None,
         authority_timeout_seconds: Optional[int] = None,
         hostname: Optional[str] = None,
+        db_path: Optional[str] = None,
     ) -> None:
         self._state = HubState.ACTIVE
         self._last_client_heartbeat: Optional[float] = None
@@ -49,6 +56,90 @@ class HubStateManager:
             else AUTHORITY_TIMEOUT_SECONDS
         )
         self._hostname = hostname or platform.node()
+
+        # Resolve db_path: explicit arg → persistence module → None (in-memory)
+        if db_path is None:
+            try:
+                from persistence import get_db_path
+                db_path = get_db_path()
+            except ImportError:
+                pass
+
+        self._db: Optional[sqlite3.Connection] = None
+        if db_path is not None:
+            try:
+                self._db = sqlite3.connect(db_path, check_same_thread=False)
+                self._db.execute("SELECT 1 FROM state LIMIT 1")
+                logger.info("Hub state store using SQLite at %s", db_path)
+            except Exception:
+                logger.warning(
+                    "SQLite unavailable — falling back to in-memory hub state",
+                    exc_info=True,
+                )
+                self._db = None
+
+        self._load_from_db()
+
+    # -- persistence helpers --
+
+    def _load_from_db(self) -> None:
+        """Load hub state and heartbeat from the database."""
+        if self._db is None:
+            return
+        try:
+            row = self._db.execute(
+                "SELECT value FROM state WHERE key = ?", (self._KEY_STATE,)
+            ).fetchone()
+            if row:
+                data = json.loads(row[0])
+                self._state = HubState(data["state"])
+
+            row = self._db.execute(
+                "SELECT value FROM state WHERE key = ?", (self._KEY_HEARTBEAT,)
+            ).fetchone()
+            if row:
+                data = json.loads(row[0])
+                # Convert stored wall-clock ISO timestamp back to monotonic offset
+                wall_ts = datetime.fromisoformat(data["wall_timestamp"])
+                elapsed = (datetime.now(timezone.utc) - wall_ts).total_seconds()
+                self._last_client_heartbeat = time.monotonic() - elapsed
+
+            logger.info("Loaded hub state from database: %s", self._state.value)
+        except Exception:
+            logger.warning("Failed to load hub state from DB", exc_info=True)
+
+    def _db_write_state(self) -> None:
+        """Write-through current hub state to SQLite."""
+        if self._db is None:
+            return
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            value = json.dumps({"state": self._state.value})
+            self._db.execute(
+                "INSERT OR REPLACE INTO state (key, value, updated_at) VALUES (?, ?, ?)",
+                (self._KEY_STATE, value, now),
+            )
+            self._db.commit()
+        except Exception:
+            logger.warning("DB write failed for hub state", exc_info=True)
+
+    def _db_write_heartbeat(self) -> None:
+        """Write-through last heartbeat timestamp to SQLite."""
+        if self._db is None:
+            return
+        try:
+            now = datetime.now(timezone.utc)
+            # Store wall-clock time so it survives restart
+            offset = time.monotonic() - self._last_client_heartbeat
+            wall = now - timedelta(seconds=offset)
+            value = json.dumps({"wall_timestamp": wall.isoformat()})
+            self._db.execute(
+                "INSERT OR REPLACE INTO state (key, value, updated_at) VALUES (?, ?, ?)",
+                (self._KEY_HEARTBEAT, value, now.isoformat()),
+            )
+            self._db.commit()
+        except Exception:
+            logger.warning("DB write failed for hub heartbeat", exc_info=True)
 
     @property
     def state(self) -> HubState:
@@ -68,6 +159,7 @@ class HubStateManager:
             return
         old = self._state
         self._state = HubState.SUSPENDED
+        self._db_write_state()
         logger.info("Hub state: %s -> suspended", old.value)
         self._try_emit(old, HubState.SUSPENDED, "suspend_command")
 
@@ -77,6 +169,7 @@ class HubStateManager:
             return
         old = self._state
         self._state = HubState.ACTIVE
+        self._db_write_state()
         logger.info("Hub state: %s -> active", old.value)
         self._try_emit(old, HubState.ACTIVE, "resume_command")
 
@@ -90,6 +183,7 @@ class HubStateManager:
             return {"status": "active", "resumed_from": "already_active"}
         old = self._state
         self._state = HubState.ACTIVE
+        self._db_write_state()
         logger.info("Hub state: %s -> active (authority confirmed)", old.value)
         self._try_emit(old, HubState.ACTIVE, "authority_confirmed")
         return {"status": "active", "resumed_from": old.value}
@@ -97,6 +191,7 @@ class HubStateManager:
     def record_heartbeat(self) -> None:
         """Record a client heartbeat (called on any client request)."""
         self._last_client_heartbeat = time.monotonic()
+        self._db_write_heartbeat()
 
     def seconds_since_last_heartbeat(self) -> Optional[float]:
         """Elapsed time since last heartbeat, or None if no heartbeat recorded."""
@@ -113,6 +208,7 @@ class HubStateManager:
         elapsed = self.seconds_since_last_heartbeat()
         if elapsed is None or elapsed > self._authority_timeout:
             self._state = HubState.AWAITING_AUTHORITY
+            self._db_write_state()
             logger.info(
                 "Startup self-check: no recent heartbeat (elapsed=%s, timeout=%d) -> awaiting_authority",
                 elapsed,

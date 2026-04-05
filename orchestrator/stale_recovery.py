@@ -15,9 +15,8 @@ Recovery actions by job state at crash:
 Re-dispatch cap: max 2 re-dispatches per job. After 2 failures,
 job transitions to failed with error_class "recovery_exhausted".
 
-V1 limitation: in-memory only, so recovery only works for jobs that
-survive process restart. No jobs survive V1 restarts; this
-infrastructure exists for when persistence is added.
+Jobs in non-terminal states are persisted to SQLite and loaded on
+startup, enabling recovery after unclean shutdowns.
 """
 
 from __future__ import annotations

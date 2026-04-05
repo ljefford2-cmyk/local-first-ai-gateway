@@ -7,7 +7,9 @@ transition hysteresis for egress routes.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -54,11 +56,14 @@ class ConnectivityMonitor:
     - Between: HALF_OPEN (degraded)
     """
 
+    _KEY_PREFIX = "circuit:"
+
     def __init__(
         self,
         routes: list[dict[str, Any]],
         emit_event: Callable[[dict[str, Any]], Any],
         get_queued_count: Callable[[], int] | None = None,
+        db_path: str | None = None,
     ) -> None:
         """Initialize the monitor.
 
@@ -70,6 +75,8 @@ class ConnectivityMonitor:
                 (e.g. ``audit_client.emit_durable``).
             get_queued_count: Optional callable returning the current number
                 of queued cloud-bound jobs.
+            db_path: Path to SQLite database for persistence. Resolved from
+                the persistence module if not provided.
         """
         self._routes_config: dict[str, dict[str, Any]] = {}
         self._health: dict[str, RouteHealth] = {}
@@ -77,10 +84,87 @@ class ConnectivityMonitor:
         self._get_queued_count = get_queued_count or (lambda: 0)
         self._monitor_task: asyncio.Task | None = None
 
+        # Resolve db_path: explicit arg → persistence module → None (in-memory)
+        if db_path is None:
+            try:
+                from persistence import get_db_path
+                db_path = get_db_path()
+            except ImportError:
+                pass
+
+        self._db: sqlite3.Connection | None = None
+        if db_path is not None:
+            try:
+                self._db = sqlite3.connect(db_path, check_same_thread=False)
+                self._db.execute("SELECT 1 FROM state LIMIT 1")
+                logger.info("Circuit breaker store using SQLite at %s", db_path)
+            except Exception:
+                logger.warning(
+                    "SQLite unavailable — falling back to in-memory circuit breaker store",
+                    exc_info=True,
+                )
+                self._db = None
+
         for route in routes:
             rid = route["route_id"]
             self._routes_config[rid] = route
             self._health[rid] = RouteHealth(route_id=rid)
+
+        self._load_from_db()
+
+    # ------------------------------------------------------------------
+    # Persistence helpers
+    # ------------------------------------------------------------------
+
+    def _load_from_db(self) -> None:
+        """Populate in-memory RouteHealth cache from the database."""
+        if self._db is None:
+            return
+        try:
+            cursor = self._db.execute(
+                "SELECT key, value FROM state WHERE key LIKE ?",
+                (self._KEY_PREFIX + "%",),
+            )
+            for row in cursor:
+                route_id = row[0][len(self._KEY_PREFIX):]
+                rh = self._health.get(route_id)
+                if rh is None:
+                    continue
+                data = json.loads(row[1])
+                rh.state = CircuitState(data["state"])
+                rh.consecutive_failures = data["consecutive_failures"]
+                rh.consecutive_successes = data["consecutive_successes"]
+                if data.get("last_success_time"):
+                    rh.last_success_time = datetime.fromisoformat(data["last_success_time"])
+                if data.get("last_failure_time"):
+                    rh.last_failure_time = datetime.fromisoformat(data["last_failure_time"])
+                if data.get("last_probe_time"):
+                    rh.last_probe_time = datetime.fromisoformat(data["last_probe_time"])
+            logger.info("Loaded circuit breaker state from database")
+        except Exception:
+            logger.warning("Failed to load circuit breaker state from DB", exc_info=True)
+
+    def _db_write(self, route_id: str, rh: RouteHealth) -> None:
+        """Write-through a single route's health state to SQLite."""
+        if self._db is None:
+            return
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            value = json.dumps({
+                "state": rh.state.value,
+                "consecutive_failures": rh.consecutive_failures,
+                "consecutive_successes": rh.consecutive_successes,
+                "last_success_time": rh.last_success_time.isoformat() if rh.last_success_time else None,
+                "last_failure_time": rh.last_failure_time.isoformat() if rh.last_failure_time else None,
+                "last_probe_time": rh.last_probe_time.isoformat() if rh.last_probe_time else None,
+            })
+            self._db.execute(
+                "INSERT OR REPLACE INTO state (key, value, updated_at) VALUES (?, ?, ?)",
+                (self._KEY_PREFIX + route_id, value, now),
+            )
+            self._db.commit()
+        except Exception:
+            logger.warning("DB write failed for circuit %s", route_id, exc_info=True)
 
     # ------------------------------------------------------------------
     # Public query API
@@ -181,6 +265,7 @@ class ConnectivityMonitor:
             new_state = CircuitState.CLOSED
 
         rh.state = new_state
+        self._db_write(route_id, rh)
 
         if new_state != old_state:
             self._on_state_change(route_id, old_state, new_state)

@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
+import sqlite3
 import time
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -31,6 +34,7 @@ from events import (
     event_job_delivered,
     event_job_dispatched,
     event_job_failed,
+    event_job_queued,
     event_job_response_received,
     event_job_revoked,
     event_job_submitted,
@@ -87,6 +91,8 @@ class JobManager:
         permission_checker: Optional[PermissionChecker] = None,
         demotion_engine: Optional[object] = None,
         worker_lifecycle: Optional[object] = None,
+        connectivity_monitor: Optional[object] = None,
+        db_path: Optional[str] = None,
     ) -> None:
         self._audit = audit_client
         self._packager = context_packager
@@ -94,17 +100,76 @@ class JobManager:
         self._permission_checker = permission_checker
         self._demotion_engine = demotion_engine
         self._worker_lifecycle = worker_lifecycle
+        self._connectivity_monitor = connectivity_monitor
         self._jobs: dict[str, Job] = {}
         self._worker_contexts: dict[str, WorkerContext] = {}  # job_id → WorkerContext
         self._queue: asyncio.Queue[str] = asyncio.Queue(maxsize=EVENT_QUEUE_BOUND)
         self._worker_task: Optional[asyncio.Task] = None
         self._auto_accept_task: Optional[asyncio.Task] = None
-        self._idempotency_store = IdempotencyStore()
+        # Resolve db_path for SQLite persistence
+        if db_path is None:
+            try:
+                from persistence import get_db_path
+                db_path = get_db_path()
+            except ImportError:
+                pass
+
+        self._idempotency_store = IdempotencyStore(db_path=db_path)
+
+        self._job_db: sqlite3.Connection | None = None
+        if db_path is not None:
+            try:
+                self._job_db = sqlite3.connect(db_path, check_same_thread=False)
+                self._job_db.execute("SELECT 1 FROM jobs LIMIT 1")
+                self._load_jobs_from_db()
+                logger.info("Job store using SQLite at %s", db_path)
+            except Exception:
+                logger.warning(
+                    "SQLite unavailable — falling back to in-memory job store",
+                    exc_info=True,
+                )
+                self._job_db = None
+
         self._hub_state_manager: Optional[object] = None
 
     def set_hub_state_manager(self, manager: object) -> None:
         """Attach a HubStateManager for processing gate checks."""
         self._hub_state_manager = manager
+
+    # -- persistence helpers --
+
+    def _load_jobs_from_db(self) -> None:
+        """Load non-terminal jobs from SQLite into the in-memory cache."""
+        if self._job_db is None:
+            return
+        try:
+            cursor = self._job_db.execute(
+                "SELECT job_id, data FROM jobs WHERE status NOT IN (?, ?, ?)",
+                (JobStatus.delivered.value, JobStatus.failed.value, JobStatus.revoked.value),
+            )
+            count = 0
+            for row in cursor:
+                data = json.loads(row[1])
+                self._jobs[row[0]] = Job(**data)
+                count += 1
+            if count:
+                logger.info("Loaded %d non-terminal jobs from database", count)
+        except Exception:
+            logger.warning("Failed to load jobs from database", exc_info=True)
+
+    def _persist_job(self, job: Job) -> None:
+        """Write-through a single job record to SQLite."""
+        if self._job_db is None:
+            return
+        try:
+            data = json.dumps(asdict(job))
+            self._job_db.execute(
+                "INSERT OR REPLACE INTO jobs (job_id, data, status, created_at, idempotency_key) VALUES (?, ?, ?, ?, ?)",
+                (job.job_id, data, job.status, job.created_at, job.idempotency_key),
+            )
+            self._job_db.commit()
+        except Exception:
+            logger.warning("DB write failed for job %s", job.job_id, exc_info=True)
 
     # -- lifecycle --
 
@@ -182,6 +247,7 @@ class JobManager:
         await self._audit.emit_durable(event)
 
         self._jobs[job_id] = job
+        self._persist_job(job)
 
         # Enqueue for async pipeline processing
         try:
@@ -189,6 +255,7 @@ class JobManager:
         except asyncio.QueueFull:
             job.status = JobStatus.failed.value
             job.error = "pipeline_queue_full"
+            self._persist_job(job)
             raise
 
         return job
@@ -386,6 +453,7 @@ class JobManager:
             result = {"status": "escalated", "job_id": job_id, "successor_job_id": successor.job_id}
 
         if result is not None:
+            self._persist_job(job)
             # Phase 6E: teardown original worker context on override
             original_wctx = self._worker_contexts.pop(job_id, None)
             if original_wctx is not None and self._worker_lifecycle is not None:
@@ -438,6 +506,7 @@ class JobManager:
         )
 
         self._jobs[new_job_id] = successor
+        self._persist_job(successor)
 
         # Emit job.classified for the successor (human-directed classification)
         classified_evt = event_job_classified(
@@ -457,6 +526,7 @@ class JobManager:
         except asyncio.QueueFull:
             successor.status = JobStatus.failed.value
             successor.error = "pipeline_queue_full"
+            self._persist_job(successor)
 
         return successor
 
@@ -526,6 +596,7 @@ class JobManager:
         await self._audit.emit_durable(reviewed_evt)
 
         job.override_type = "auto_delivered"
+        self._persist_job(job)
 
     async def _auto_accept_loop(self) -> None:
         """Periodically check all jobs for auto-accept eligibility."""
@@ -558,6 +629,7 @@ class JobManager:
                 if job and job.status != JobStatus.delivered.value:
                     job.status = JobStatus.failed.value
                     job.error = "pipeline_error"
+                    self._persist_job(job)
                 # Phase 6E: teardown worker on pipeline failure
                 wctx = self._worker_contexts.pop(job_id, None)
                 if wctx is not None and self._worker_lifecycle is not None:
@@ -616,6 +688,31 @@ class JobManager:
 
         # Phase 5E: record WAL level at classification time (v1: all WAL-0)
         job.wal_level = 0
+        self._persist_job(job)
+
+        # 1.5. Circuit breaker gate — block dispatch if route is OPEN
+        if (
+            routing == "cloud"
+            and self._connectivity_monitor is not None
+            and not self._connectivity_monitor.is_route_available(route_id)
+        ):
+            queued_evt = event_job_queued(
+                job_id=job_id, reason="connectivity", position=0, estimated_wait_ms=None,
+            )
+            await self._audit.emit_durable(queued_evt)
+            failed_evt = event_job_failed(
+                job_id=job_id,
+                error_class="route_unavailable",
+                detail=f"Circuit breaker OPEN for route {route_id}",
+            )
+            await self._audit.emit_durable(failed_evt)
+            job.status = JobStatus.failed.value
+            job.error = f"route_unavailable: circuit breaker OPEN for {route_id}"
+            self._persist_job(job)
+            logger.warning(
+                "Job %s blocked: circuit breaker OPEN for route %s", job_id, route_id,
+            )
+            return
 
         # 2. Permission check
         if self._permission_checker:
@@ -648,6 +745,7 @@ class JobManager:
                 await self._audit.emit_durable(failed_event)
                 job.status = JobStatus.failed.value
                 job.error = f"permission_denied: {perm_result.block_reason}"
+                self._persist_job(job)
                 return
 
             if perm_result.result == "held":
@@ -683,6 +781,7 @@ class JobManager:
                 logger.error("Worker preparation failed for job %s: %s", job_id, exc)
                 job.status = JobStatus.failed.value
                 job.error = "worker_preparation_failed"
+                self._persist_job(job)
                 return
 
         # 2b. Egress fallback check: if routing locally, check whether
@@ -736,6 +835,7 @@ class JobManager:
 
         job.status = JobStatus.dispatched.value
         job.dispatched_at = _now_iso()
+        self._persist_job(job)
 
         dispatch_start = time.monotonic()
 
@@ -772,6 +872,7 @@ class JobManager:
                     await self._audit.emit_durable(failed_event)
                     job.status = JobStatus.failed.value
                     job.error = "worker_execution_failed"
+                    self._persist_job(job)
                     if worker_ctx is not None and self._worker_lifecycle is not None:
                         worker_ctx.status = "failed"
                         await self._worker_lifecycle.teardown_worker(worker_ctx)
@@ -817,6 +918,7 @@ class JobManager:
                 job.status = JobStatus.failed.value
                 job.error = f"{failure_type}: {detail}"
                 job.last_failing_capability_id = failure_type
+                self._persist_job(job)
                 # Phase 6E: teardown worker on dispatch failure
                 if worker_ctx is not None and self._worker_lifecycle is not None:
                     worker_ctx.status = "failed"
@@ -864,6 +966,7 @@ class JobManager:
         job.response_received_at = _now_iso()
         job.result = response_text
         job.result_id = result_id
+        self._persist_job(job)
 
         # Write original result to disk for lineage
         _write_result(result_id, response_text)
@@ -874,6 +977,7 @@ class JobManager:
 
         job.status = JobStatus.delivered.value
         job.delivered_at = _now_iso()
+        self._persist_job(job)
 
         # Phase 6E: teardown worker on job completion
         if worker_ctx is not None and self._worker_lifecycle is not None:

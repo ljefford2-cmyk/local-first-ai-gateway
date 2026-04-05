@@ -1,8 +1,9 @@
-"""Worker executor unit tests — sandbox, container execution, Docker checks,
-execution events, lifecycle execute_in_worker bridge, and worker_agent I/O.
+"""Worker executor unit tests — sandbox, container execution via sidecar,
+health checks, execution events, lifecycle execute_in_worker bridge,
+and worker_agent I/O.
 
-Uses FakeContainer, FakeDockerClient, FakeResourceConfig, FakeSecurityConfig,
-and MockAuditClient to isolate each concern without a running Docker daemon.
+Uses MockHttpxClient and MockResponse to mock the worker-proxy sidecar
+HTTP API, isolating each concern without a running Docker daemon.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "orchestrator"))
@@ -33,85 +35,40 @@ UUID_V7_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
-# Test helpers — fakes and mocks
+# Test helpers — sidecar HTTP mocks
 # ---------------------------------------------------------------------------
 
 
-class FakeContainer:
-    """Minimal stand-in for docker.models.containers.Container."""
+class MockResponse:
+    """Stand-in for httpx.Response."""
 
-    def __init__(
-        self,
-        container_id: str = "fake-container-abc123",
-        exit_code: int = 0,
-        logs_text: str = "",
-    ):
-        self.id = container_id
-        self._exit_code = exit_code
-        self._logs_text = logs_text
-        self.started = False
-        self.removed = False
+    def __init__(self, status_code: int = 200, json_data: dict | None = None, text: str = ""):
+        self.status_code = status_code
+        self._json_data = json_data if json_data is not None else {}
+        self.text = text
 
-    def start(self):
-        self.started = True
-
-    def wait(self, timeout=300):
-        return {"StatusCode": self._exit_code}
-
-    def logs(self, tail=200):
-        return self._logs_text.encode("utf-8")
-
-    def remove(self, force=False):
-        self.removed = True
+    def json(self):
+        return self._json_data
 
 
-class FakeDockerClient:
-    """Minimal stand-in for docker.DockerClient."""
+class MockHttpxClient:
+    """Captures POST requests to the sidecar and returns configurable responses."""
 
-    def __init__(self, container: FakeContainer | None = None, ping_ok: bool = True):
-        self._container = container or FakeContainer()
-        self._ping_ok = ping_ok
-        self.containers = self._ContainerCollection(self._container)
-        self.images = self._ImageCollection()
+    def __init__(self, response: MockResponse | None = None):
+        self._response = response or MockResponse()
+        self.last_post_json: dict[str, Any] | None = None
+        self.last_post_url: str | None = None
 
-    def ping(self):
-        if not self._ping_ok:
-            raise ConnectionError("Docker not available")
-        return True
+    def post(self, url: str, json: dict | None = None, **kwargs) -> MockResponse:
+        self.last_post_url = url
+        self.last_post_json = json
+        return self._response
 
-    class _ContainerCollection:
-        def __init__(self, container: FakeContainer):
-            self._container = container
-            self.last_create_kwargs: dict[str, Any] = {}
+    def __enter__(self):
+        return self
 
-        def create(self, **kwargs) -> FakeContainer:
-            self.last_create_kwargs = kwargs
-            return self._container
-
-    class _ImageCollection:
-        def __init__(self):
-            self._images: set[str] = {"drnt-worker:latest"}
-
-        def get(self, image: str):
-            if image not in self._images:
-                import docker.errors
-                raise docker.errors.ImageNotFound(f"{image} not found")
-            return MagicMock()
-
-
-@dataclass
-class FakeResourceConfig:
-    memory_limit: str = "256m"
-    cpu_period: int = 100000
-    cpu_quota: int = 0
-    pids_limit: int = 256
-
-
-@dataclass
-class FakeSecurityConfig:
-    cap_drop: list[str] = field(default_factory=lambda: ["ALL"])
-    read_only_rootfs: bool = True
-    no_new_privileges: bool = True
+    def __exit__(self, *args):
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -190,18 +147,26 @@ class TestSandboxDirectory:
 
 
 class TestContainerExecution:
-    """Docker container creation, execution, security configuration."""
+    """Container execution via worker-proxy sidecar HTTP API."""
 
-    def _make_executor(self, tmp_path, container=None, ping_ok=True):
-        executor = WorkerExecutor(sandbox_base_dir=str(tmp_path))
-        fake_client = FakeDockerClient(container=container, ping_ok=ping_ok)
-        executor._client = fake_client
-        return executor, fake_client
+    def _make_executor(self, tmp_path, sidecar_response=None):
+        executor = WorkerExecutor(
+            sandbox_base_dir=str(tmp_path),
+            worker_proxy_url="http://test-proxy:9100",
+        )
+        mock_client = MockHttpxClient(sidecar_response or MockResponse(
+            json_data={"container_id": "fake-container-abc123", "exit_code": 0, "status": "completed"},
+        ))
+        return executor, mock_client
 
     @pytest.mark.asyncio
-    async def test_execute_success_with_mocked_docker(self, tmp_path):
-        container = FakeContainer(exit_code=0)
-        executor, client = self._make_executor(tmp_path, container=container)
+    async def test_execute_success_via_sidecar(self, tmp_path):
+        sidecar_resp = MockResponse(json_data={
+            "container_id": "fake-container-abc123",
+            "exit_code": 0,
+            "status": "completed",
+        })
+        executor, mock_client = self._make_executor(tmp_path, sidecar_resp)
 
         # Pre-write result.json that the "container" would produce
         sandbox = executor._prepare_sandbox_dir("job-exec-01", "worker-exec-01")
@@ -216,18 +181,18 @@ class TestContainerExecution:
         }
         (sandbox / "outbox" / "result.json").write_text(json.dumps(result_data))
 
-        # Patch _prepare_sandbox_dir to return the pre-made sandbox
         with patch.object(executor, "_prepare_sandbox_dir", return_value=sandbox):
-            result = await executor.execute(
-                worker_id="worker-exec-01",
-                job_id="job-exec-01",
-                capability_id="route.local",
-                image="drnt-worker:latest",
-                task_payload={"task_id": "job-exec-01", "task_type": "text_generation",
-                              "payload": {"prompt": "hi", "model": "llama3.1:8b"}},
-                resource_config={"memory_limit": "256m", "cpu_period": 100000},
-                security_config={"cap_drop": ["ALL"], "read_only_rootfs": True},
-            )
+            with patch("worker_executor.httpx.Client", return_value=mock_client):
+                result = await executor.execute(
+                    worker_id="worker-exec-01",
+                    job_id="job-exec-01",
+                    capability_id="route.local",
+                    image="drnt-worker:latest",
+                    task_payload={"task_id": "job-exec-01", "task_type": "text_generation",
+                                  "payload": {"prompt": "hi", "model": "llama3.1:8b"}},
+                    resource_config={"memory_limit": "256m", "cpu_period": 100000},
+                    security_config={"cap_drop": ["ALL"], "read_only_rootfs": True},
+                )
 
         assert isinstance(result, WorkerResult)
         assert result.success is True
@@ -235,87 +200,94 @@ class TestContainerExecution:
         assert result.token_count_in == 5
         assert result.token_count_out == 10
         assert result.model == "llama3.1:8b"
-        assert container.started is True
+        assert result.container_id == "fake-container-abc123"
 
     @pytest.mark.asyncio
     async def test_container_failure_returns_success_false(self, tmp_path):
-        container = FakeContainer(exit_code=1, logs_text="Segfault")
-        executor, client = self._make_executor(tmp_path, container=container)
+        sidecar_resp = MockResponse(json_data={
+            "container_id": "fake-container-fail",
+            "exit_code": 1,
+            "status": "failed",
+            "logs": "Segfault",
+        })
+        executor, mock_client = self._make_executor(tmp_path, sidecar_resp)
 
         sandbox = executor._prepare_sandbox_dir("job-fail-01", "worker-fail-01")
-        # Write a result.json with error status
-        result_data = {
-            "task_id": "job-fail-01",
-            "status": "error",
-            "error": "ollama request failed: Connection refused",
-        }
-        (sandbox / "outbox" / "result.json").write_text(json.dumps(result_data))
 
         with patch.object(executor, "_prepare_sandbox_dir", return_value=sandbox):
-            result = await executor.execute(
-                worker_id="worker-fail-01",
-                job_id="job-fail-01",
-                capability_id="route.local",
-                image="drnt-worker:latest",
-                task_payload={"task_id": "job-fail-01", "task_type": "text_generation",
-                              "payload": {"prompt": "hi"}},
-                resource_config={},
-                security_config={},
-            )
+            with patch("worker_executor.httpx.Client", return_value=mock_client):
+                result = await executor.execute(
+                    worker_id="worker-fail-01",
+                    job_id="job-fail-01",
+                    capability_id="route.local",
+                    image="drnt-worker:latest",
+                    task_payload={"task_id": "job-fail-01", "task_type": "text_generation",
+                                  "payload": {"prompt": "hi"}},
+                    resource_config={},
+                    security_config={},
+                )
 
         assert result.success is False
         assert result.exit_code == 1
 
     @pytest.mark.asyncio
     async def test_security_config_applied(self, tmp_path):
-        container = FakeContainer(exit_code=0)
-        executor, client = self._make_executor(tmp_path, container=container)
+        sidecar_resp = MockResponse(json_data={
+            "container_id": "fake-sec", "exit_code": 0, "status": "completed",
+        })
+        executor, mock_client = self._make_executor(tmp_path, sidecar_resp)
 
         sandbox = executor._prepare_sandbox_dir("job-sec-01", "worker-sec-01")
-        result_data = {"task_id": "job-sec-01", "status": "success", "result": "ok"}
-        (sandbox / "outbox" / "result.json").write_text(json.dumps(result_data))
+        (sandbox / "outbox" / "result.json").write_text(
+            json.dumps({"status": "success", "result": "ok"})
+        )
 
         with patch.object(executor, "_prepare_sandbox_dir", return_value=sandbox):
-            await executor.execute(
-                worker_id="worker-sec-01",
-                job_id="job-sec-01",
-                capability_id="route.local",
-                image="drnt-worker:latest",
-                task_payload={"task_id": "job-sec-01", "task_type": "text_generation",
-                              "payload": {"prompt": "hi"}},
-                resource_config={},
-                security_config={"mem_limit": "256m", "pids_limit": 256},
-            )
+            with patch("worker_executor.httpx.Client", return_value=mock_client):
+                await executor.execute(
+                    worker_id="worker-sec-01",
+                    job_id="job-sec-01",
+                    capability_id="route.local",
+                    image="drnt-worker:latest",
+                    task_payload={"task_id": "job-sec-01", "task_type": "text_generation",
+                                  "payload": {"prompt": "hi"}},
+                    resource_config={},
+                    security_config={"mem_limit": "256m", "pids_limit": 256},
+                )
 
-        kwargs = client.containers.last_create_kwargs
-        assert kwargs["cap_drop"] == ["ALL"]
-        assert kwargs["read_only"] is True
-        assert kwargs["security_opt"] == ["no-new-privileges"]
-        assert kwargs["mem_limit"] == "256m"
-        assert kwargs["pids_limit"] == 256
+        body = mock_client.last_post_json
+        assert body["cap_drop"] == ["ALL"]
+        assert body["read_only"] is True
+        assert body["security_opt"] == ["no-new-privileges"]
+        assert body["mem_limit"] == "256m"
+        assert body["pids_limit"] == 256
 
     @pytest.mark.asyncio
     async def test_inbox_mounted_ro_outbox_mounted_rw(self, tmp_path):
-        container = FakeContainer(exit_code=0)
-        executor, client = self._make_executor(tmp_path, container=container)
+        sidecar_resp = MockResponse(json_data={
+            "container_id": "fake-mnt", "exit_code": 0, "status": "completed",
+        })
+        executor, mock_client = self._make_executor(tmp_path, sidecar_resp)
 
         sandbox = executor._prepare_sandbox_dir("job-mnt-01", "worker-mnt-01")
-        result_data = {"task_id": "job-mnt-01", "status": "success", "result": "ok"}
-        (sandbox / "outbox" / "result.json").write_text(json.dumps(result_data))
+        (sandbox / "outbox" / "result.json").write_text(
+            json.dumps({"status": "success", "result": "ok"})
+        )
 
         with patch.object(executor, "_prepare_sandbox_dir", return_value=sandbox):
-            await executor.execute(
-                worker_id="worker-mnt-01",
-                job_id="job-mnt-01",
-                capability_id="route.local",
-                image="drnt-worker:latest",
-                task_payload={"task_id": "job-mnt-01", "task_type": "text_generation",
-                              "payload": {"prompt": "hi"}},
-                resource_config={},
-                security_config={},
-            )
+            with patch("worker_executor.httpx.Client", return_value=mock_client):
+                await executor.execute(
+                    worker_id="worker-mnt-01",
+                    job_id="job-mnt-01",
+                    capability_id="route.local",
+                    image="drnt-worker:latest",
+                    task_payload={"task_id": "job-mnt-01", "task_type": "text_generation",
+                                  "payload": {"prompt": "hi"}},
+                    resource_config={},
+                    security_config={},
+                )
 
-        volumes = client.containers.last_create_kwargs["volumes"]
+        volumes = mock_client.last_post_json["volumes"]
         # Find the inbox and outbox bindings
         inbox_binding = None
         outbox_binding = None
@@ -332,54 +304,59 @@ class TestContainerExecution:
 
     @pytest.mark.asyncio
     async def test_environment_vars_set_correctly(self, tmp_path):
-        container = FakeContainer(exit_code=0)
-        executor, client = self._make_executor(tmp_path, container=container)
+        sidecar_resp = MockResponse(json_data={
+            "container_id": "fake-env", "exit_code": 0, "status": "completed",
+        })
+        executor, mock_client = self._make_executor(tmp_path, sidecar_resp)
 
         sandbox = executor._prepare_sandbox_dir("job-env-01", "worker-env-01")
-        result_data = {"task_id": "job-env-01", "status": "success", "result": "ok"}
-        (sandbox / "outbox" / "result.json").write_text(json.dumps(result_data))
+        (sandbox / "outbox" / "result.json").write_text(
+            json.dumps({"status": "success", "result": "ok"})
+        )
 
         with patch.object(executor, "_prepare_sandbox_dir", return_value=sandbox):
-            await executor.execute(
-                worker_id="worker-env-01",
-                job_id="job-env-01",
-                capability_id="route.local",
-                image="drnt-worker:latest",
-                task_payload={"task_id": "job-env-01", "task_type": "text_generation",
-                              "payload": {"prompt": "hi"}},
-                resource_config={},
-                security_config={},
-            )
+            with patch("worker_executor.httpx.Client", return_value=mock_client):
+                await executor.execute(
+                    worker_id="worker-env-01",
+                    job_id="job-env-01",
+                    capability_id="route.local",
+                    image="drnt-worker:latest",
+                    task_payload={"task_id": "job-env-01", "task_type": "text_generation",
+                                  "payload": {"prompt": "hi"}},
+                    resource_config={},
+                    security_config={},
+                )
 
-        env = client.containers.last_create_kwargs["environment"]
+        env = mock_client.last_post_json["environment"]
         assert env["OLLAMA_URL"] == "http://ollama:11434"
         assert env["DRNT_WORKER_ID"] == "worker-env-01"
         assert env["DRNT_JOB_ID"] == "job-env-01"
         assert env["DRNT_CAPABILITY"] == "route.local"
 
     @pytest.mark.asyncio
-    async def test_cleanup_on_docker_failure(self, tmp_path):
-        """Container is removed and sandbox cleaned up even on failure."""
-        container = FakeContainer(exit_code=0)
-        executor, client = self._make_executor(tmp_path, container=container)
+    async def test_cleanup_on_no_result(self, tmp_path):
+        """Sandbox is cleaned up even when no result.json is produced."""
+        sidecar_resp = MockResponse(json_data={
+            "container_id": "fake-cleanup", "exit_code": 0, "status": "completed",
+        })
+        executor, mock_client = self._make_executor(tmp_path, sidecar_resp)
 
         sandbox = executor._prepare_sandbox_dir("job-cleanup-01", "worker-cleanup-01")
         # No result.json — simulates container that produced no output
 
         with patch.object(executor, "_prepare_sandbox_dir", return_value=sandbox):
-            result = await executor.execute(
-                worker_id="worker-cleanup-01",
-                job_id="job-cleanup-01",
-                capability_id="route.local",
-                image="drnt-worker:latest",
-                task_payload={"task_id": "job-cleanup-01", "task_type": "text_generation",
-                              "payload": {"prompt": "hi"}},
-                resource_config={},
-                security_config={},
-            )
+            with patch("worker_executor.httpx.Client", return_value=mock_client):
+                result = await executor.execute(
+                    worker_id="worker-cleanup-01",
+                    job_id="job-cleanup-01",
+                    capability_id="route.local",
+                    image="drnt-worker:latest",
+                    task_payload={"task_id": "job-cleanup-01", "task_type": "text_generation",
+                                  "payload": {"prompt": "hi"}},
+                    resource_config={},
+                    security_config={},
+                )
 
-        # Container should have been removed in the finally block
-        assert container.removed is True
         # Sandbox should have been cleaned up
         assert not sandbox.exists()
         # Result should indicate failure (no result.json)
@@ -392,24 +369,40 @@ class TestContainerExecution:
 
 
 class TestDockerChecks:
-    """Docker availability and image existence checks."""
+    """Sidecar availability and image existence checks."""
 
     def test_check_docker_available_true(self, tmp_path):
-        executor = WorkerExecutor(sandbox_base_dir=str(tmp_path))
-        executor._client = FakeDockerClient(ping_ok=True)
-        assert executor.check_docker_available() is True
+        executor = WorkerExecutor(
+            sandbox_base_dir=str(tmp_path),
+            worker_proxy_url="http://test-proxy:9100",
+        )
+        with patch("worker_executor.httpx.get", return_value=MockResponse(status_code=200)):
+            assert executor.check_docker_available() is True
 
     def test_check_docker_available_false(self, tmp_path):
-        executor = WorkerExecutor(sandbox_base_dir=str(tmp_path))
-        executor._client = FakeDockerClient(ping_ok=False)
-        assert executor.check_docker_available() is False
+        executor = WorkerExecutor(
+            sandbox_base_dir=str(tmp_path),
+            worker_proxy_url="http://test-proxy:9100",
+        )
+        with patch("worker_executor.httpx.get", side_effect=httpx.ConnectError("refused")):
+            assert executor.check_docker_available() is False
 
     def test_check_image_exists(self, tmp_path):
-        executor = WorkerExecutor(sandbox_base_dir=str(tmp_path))
-        executor._client = FakeDockerClient()
-        # "drnt-worker:latest" is in FakeDockerClient._ImageCollection
-        assert executor.check_image_exists("drnt-worker:latest") is True
-        assert executor.check_image_exists("nonexistent:v1") is False
+        executor = WorkerExecutor(
+            sandbox_base_dir=str(tmp_path),
+            worker_proxy_url="http://test-proxy:9100",
+        )
+        # Image exists
+        with patch("worker_executor.httpx.get", return_value=MockResponse(
+            json_data={"exists": True}
+        )):
+            assert executor.check_image_exists("drnt-worker:latest") is True
+
+        # Image does not exist
+        with patch("worker_executor.httpx.get", return_value=MockResponse(
+            json_data={"exists": False}
+        )):
+            assert executor.check_image_exists("nonexistent:v1") is False
 
 
 # ---------------------------------------------------------------------------
@@ -757,3 +750,248 @@ class TestWorkerAgent:
         assert loaded["token_count_in"] == 8
         assert loaded["token_count_out"] == 12
         assert loaded["wall_seconds"] == 3.14
+
+
+# ---------------------------------------------------------------------------
+# 7. TestSeccompAndNetworkIsolation (6 tests)
+# ---------------------------------------------------------------------------
+
+
+class TestSeccompAndNetworkIsolation:
+    """Seccomp profile and network isolation plumbing through executor to sidecar."""
+
+    def _make_executor(self, tmp_path, sidecar_response=None):
+        executor = WorkerExecutor(
+            sandbox_base_dir=str(tmp_path),
+            worker_proxy_url="http://test-proxy:9100",
+        )
+        mock_client = MockHttpxClient(sidecar_response or MockResponse(
+            json_data={"container_id": "fake-sn", "exit_code": 0, "status": "completed"},
+        ))
+        return executor, mock_client
+
+    async def _run_execute(self, executor, mock_client, tmp_path, security_config, suffix="01"):
+        sandbox = executor._prepare_sandbox_dir(f"job-sn-{suffix}", f"worker-sn-{suffix}")
+        (sandbox / "outbox" / "result.json").write_text(
+            json.dumps({"status": "success", "result": "ok"})
+        )
+        with patch.object(executor, "_prepare_sandbox_dir", return_value=sandbox):
+            with patch("worker_executor.httpx.Client", return_value=mock_client):
+                return await executor.execute(
+                    worker_id=f"worker-sn-{suffix}",
+                    job_id=f"job-sn-{suffix}",
+                    capability_id="route.local",
+                    image="drnt-worker:latest",
+                    task_payload={"task_id": f"job-sn-{suffix}", "task_type": "text_generation",
+                                  "payload": {"prompt": "hi"}},
+                    resource_config={},
+                    security_config=security_config,
+                )
+
+    @pytest.mark.asyncio
+    async def test_seccomp_profile_in_security_opt(self, tmp_path):
+        """seccomp_profile in security_config appears in security_opt."""
+        executor, mock_client = self._make_executor(tmp_path)
+        await self._run_execute(executor, mock_client, tmp_path, {
+            "seccomp_profile": "/var/drnt/config/seccomp-default.json",
+        }, suffix="01")
+        body = mock_client.last_post_json
+        assert "no-new-privileges" in body["security_opt"]
+        assert "seccomp=/var/drnt/config/seccomp-default.json" in body["security_opt"]
+
+    @pytest.mark.asyncio
+    async def test_security_opt_without_seccomp(self, tmp_path):
+        """Without seccomp_profile, security_opt has only no-new-privileges."""
+        executor, mock_client = self._make_executor(tmp_path)
+        await self._run_execute(executor, mock_client, tmp_path, {}, suffix="02")
+        body = mock_client.last_post_json
+        assert body["security_opt"] == ["no-new-privileges"]
+
+    @pytest.mark.asyncio
+    async def test_network_mode_none_uses_network_mode_param(self, tmp_path):
+        """network_mode='none' sets network_mode param, not network."""
+        executor, mock_client = self._make_executor(tmp_path)
+        await self._run_execute(executor, mock_client, tmp_path, {"network_mode": "none"}, suffix="03")
+        body = mock_client.last_post_json
+        assert body.get("network_mode") == "none"
+        assert "network" not in body
+
+    @pytest.mark.asyncio
+    async def test_named_network_uses_network_param(self, tmp_path):
+        """Non-'none' network_mode uses network param."""
+        executor, mock_client = self._make_executor(tmp_path)
+        await self._run_execute(executor, mock_client, tmp_path, {
+            "network_mode": "drnt-egress-proxy",
+        }, suffix="04")
+        body = mock_client.last_post_json
+        assert body.get("network") == "drnt-egress-proxy"
+        assert "network_mode" not in body
+
+    @pytest.mark.asyncio
+    async def test_default_network_mode_is_none(self, tmp_path):
+        """When no network_mode in security_config, default to 'none' (fail closed)."""
+        executor, mock_client = self._make_executor(tmp_path)
+        await self._run_execute(executor, mock_client, tmp_path, {}, suffix="05")
+        body = mock_client.last_post_json
+        assert body.get("network_mode") == "none"
+        assert "network" not in body
+
+    @pytest.mark.asyncio
+    async def test_seccomp_and_network_combined(self, tmp_path):
+        """Both seccomp and network_mode flow through together."""
+        executor, mock_client = self._make_executor(tmp_path)
+        await self._run_execute(executor, mock_client, tmp_path, {
+            "seccomp_profile": "/var/drnt/config/seccomp-default.json",
+            "network_mode": "drnt-egress-proxy",
+        }, suffix="06")
+        body = mock_client.last_post_json
+        assert "seccomp=/var/drnt/config/seccomp-default.json" in body["security_opt"]
+        assert body.get("network") == "drnt-egress-proxy"
+
+
+# ---------------------------------------------------------------------------
+# 8. TestLifecycleSeccompNetworkPlumbing (3 tests)
+# ---------------------------------------------------------------------------
+
+
+class TestLifecycleSeccompNetworkPlumbing:
+    """Lifecycle passes seccomp and network_mode through to executor."""
+
+    @pytest.mark.asyncio
+    async def test_passes_seccomp_profile_from_env(self, tmp_path):
+        """execute_in_worker passes DRNT_SECCOMP_PROFILE to executor."""
+        lifecycle, audit, executor = _make_lifecycle_with_executor(tmp_path)
+        job = _make_job()
+        ctx = await lifecycle.prepare_worker(job)
+        audit.clear()
+
+        with patch.dict(os.environ, {"DRNT_SECCOMP_PROFILE": "/var/drnt/config/seccomp-default.json"}):
+            await lifecycle.execute_in_worker(ctx, prompt="hello")
+
+        sc = executor.last_kwargs["security_config"]
+        assert sc["seccomp_profile"] == "/var/drnt/config/seccomp-default.json"
+
+    @pytest.mark.asyncio
+    async def test_passes_network_mode_none_for_empty_egress(self, tmp_path):
+        """Workers with empty egress_allow get network_mode='none'."""
+        lifecycle, audit, executor = _make_lifecycle_with_executor(tmp_path)
+        job = _make_job()
+        ctx = await lifecycle.prepare_worker(job)
+        audit.clear()
+
+        await lifecycle.execute_in_worker(ctx, prompt="hello")
+
+        sc = executor.last_kwargs["security_config"]
+        assert sc["network_mode"] == "none"
+
+    @pytest.mark.asyncio
+    async def test_passes_egress_proxy_network_for_nonempty_egress(self, tmp_path):
+        """Workers with non-empty egress_allow get network_mode='drnt-egress-proxy'."""
+        from egress_proxy import EgressPolicy
+
+        lifecycle, audit, executor = _make_lifecycle_with_executor(tmp_path)
+        lifecycle._egress_store.set("route.local", EgressPolicy(
+            capability_id="route.local",
+            allowed_endpoints=["api.example.com:443"],
+            rate_limit_rpm=30,
+        ))
+        # Authorize the endpoint in the manifest validator
+        lifecycle._validator._egress_endpoints["route.local"] = ["api.example.com:443"]
+
+        job = _make_job()
+        ctx = await lifecycle.prepare_worker(job)
+        audit.clear()
+
+        await lifecycle.execute_in_worker(ctx, prompt="hello")
+
+        sc = executor.last_kwargs["security_config"]
+        assert sc["network_mode"] == "drnt-egress-proxy"
+
+
+# ---------------------------------------------------------------------------
+# 9. TestSidecarFailureModes (3 tests)
+# ---------------------------------------------------------------------------
+
+
+class TestSidecarFailureModes:
+    """Fail-closed behavior when the worker-proxy sidecar is unavailable."""
+
+    @pytest.mark.asyncio
+    async def test_sidecar_unreachable_raises(self, tmp_path):
+        """If the sidecar is unreachable, execution fails closed."""
+        executor = WorkerExecutor(
+            sandbox_base_dir=str(tmp_path),
+            worker_proxy_url="http://test-proxy:9100",
+        )
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post.side_effect = httpx.ConnectError("Connection refused")
+
+        with patch("worker_executor.httpx.Client", return_value=mock_client):
+            with pytest.raises(WorkerExecutionError, match="Worker proxy unreachable"):
+                await executor.execute(
+                    worker_id="worker-fail-01",
+                    job_id="job-fail-01",
+                    capability_id="route.local",
+                    image="drnt-worker:latest",
+                    task_payload={"task_id": "job-fail-01", "task_type": "text_generation",
+                                  "payload": {"prompt": "hi"}},
+                    resource_config={},
+                    security_config={},
+                )
+
+    @pytest.mark.asyncio
+    async def test_sidecar_timeout_response(self, tmp_path):
+        """Sidecar returns timeout status → WorkerResult with timeout error."""
+        executor = WorkerExecutor(
+            sandbox_base_dir=str(tmp_path),
+            worker_proxy_url="http://test-proxy:9100",
+        )
+        sidecar_resp = MockResponse(json_data={
+            "container_id": "ctr-timeout",
+            "exit_code": -1,
+            "status": "timeout",
+        })
+        mock_client = MockHttpxClient(sidecar_resp)
+
+        with patch("worker_executor.httpx.Client", return_value=mock_client):
+            result = await executor.execute(
+                worker_id="worker-to-01",
+                job_id="job-to-01",
+                capability_id="route.local",
+                image="drnt-worker:latest",
+                task_payload={"task_id": "job-to-01", "task_type": "text_generation",
+                              "payload": {"prompt": "hi"}},
+                resource_config={},
+                security_config={},
+                wall_timeout=60,
+            )
+
+        assert result.success is False
+        assert "timed out" in result.error
+        assert result.container_id == "ctr-timeout"
+
+    @pytest.mark.asyncio
+    async def test_sidecar_error_response(self, tmp_path):
+        """Sidecar returns HTTP 500 → WorkerExecutionError."""
+        executor = WorkerExecutor(
+            sandbox_base_dir=str(tmp_path),
+            worker_proxy_url="http://test-proxy:9100",
+        )
+        sidecar_resp = MockResponse(status_code=500, text="Internal Server Error")
+        mock_client = MockHttpxClient(sidecar_resp)
+
+        with patch("worker_executor.httpx.Client", return_value=mock_client):
+            with pytest.raises(WorkerExecutionError, match="Sidecar error 500"):
+                await executor.execute(
+                    worker_id="worker-err-01",
+                    job_id="job-err-01",
+                    capability_id="route.local",
+                    image="drnt-worker:latest",
+                    task_payload={"task_id": "job-err-01", "task_type": "text_generation",
+                                  "payload": {"prompt": "hi"}},
+                    resource_config={},
+                    security_config={},
+                )

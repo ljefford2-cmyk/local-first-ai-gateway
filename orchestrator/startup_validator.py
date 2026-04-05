@@ -39,7 +39,7 @@ def _now_iso() -> str:
 class HubConfig:
     """Hub configuration with paths and runtime settings for startup validation."""
 
-    docker_socket_path: str = "/var/run/docker.sock"
+    worker_proxy_url: str = "http://worker-proxy:9100"
     worker_base_image: str = "drnt-worker:latest"
     sandbox_base_dir: str = "/var/drnt/workers"
     seccomp_profile_path: str = "/var/drnt/config/seccomp-default.json"
@@ -185,19 +185,19 @@ class StartupValidator:
         """Item 8: Verify container runtime and sandbox prerequisites.
 
         Sub-checks:
-        - Docker socket accessible
-        - Worker base image exists (docker image inspect)
+        - Worker proxy sidecar reachable
+        - Worker base image exists (via sidecar)
         - Sandbox base directory exists and is writable
         - Seccomp profile file exists and is valid JSON
         """
         details: dict[str, Any] = {}
         failures: list[str] = []
 
-        # 1. Docker socket
+        # 1. Worker proxy sidecar
         socket_ok = self._check_docker_socket()
-        details["docker_socket_accessible"] = socket_ok
+        details["worker_proxy_accessible"] = socket_ok
         if not socket_ok:
-            failures.append("Docker socket not accessible")
+            failures.append("Worker proxy not accessible")
 
         # 2. Worker base image
         image_ok = self._check_base_image()
@@ -230,36 +230,26 @@ class StartupValidator:
         )
 
     def _check_docker_socket(self) -> bool:
-        """Check that the Docker socket exists and is accessible."""
-        path = self._config.docker_socket_path
-        return os.path.exists(path)
+        """Check that the worker-proxy sidecar is reachable."""
+        try:
+            resp = httpx.get(
+                f"{self._config.worker_proxy_url}/health", timeout=5.0
+            )
+            return resp.status_code == 200
+        except Exception:
+            return False
 
     def _check_base_image(self) -> bool:
-        """Check that the worker base image exists via Docker Engine API.
-
-        Uses httpx with Unix domain socket transport to query the Docker
-        daemon directly, avoiding a dependency on the Docker CLI binary.
-        Falls back to subprocess if the API approach fails.
-        """
-        # Primary: query Docker Engine API via Unix socket
+        """Check that the worker base image exists via the worker-proxy sidecar."""
         try:
-            from urllib.parse import quote
-            transport = httpx.HTTPTransport(uds=self._config.docker_socket_path)
-            with httpx.Client(transport=transport, timeout=10.0) as client:
-                encoded = quote(self._config.worker_base_image, safe="")
-                resp = client.get(f"http://docker/v1.43/images/{encoded}/json")
-                return resp.status_code == 200
-        except Exception:
-            pass
-        # Fallback: docker CLI
-        try:
-            result = subprocess.run(
-                ["docker", "image", "inspect", self._config.worker_base_image],
-                capture_output=True,
-                timeout=10,
+            resp = httpx.get(
+                f"{self._config.worker_proxy_url}/images/{self._config.worker_base_image}",
+                timeout=10.0,
             )
-            return result.returncode == 0
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            if resp.status_code != 200:
+                return False
+            return resp.json().get("exists", False)
+        except Exception:
             return False
 
     def _check_sandbox_dir(self) -> bool:

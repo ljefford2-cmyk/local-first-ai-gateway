@@ -46,7 +46,6 @@ UUID_V7_RE = re.compile(
 
 def _make_config(tmp_dir: str, **overrides) -> HubConfig:
     """Build a HubConfig rooted in a temp directory with all paths valid."""
-    docker_sock = os.path.join(tmp_dir, "docker.sock")
     sandbox_dir = os.path.join(tmp_dir, "workers")
     audit_dir = os.path.join(tmp_dir, "audit")
     egress_state_dir = os.path.join(tmp_dir, "egress_state")
@@ -57,9 +56,6 @@ def _make_config(tmp_dir: str, **overrides) -> HubConfig:
     os.makedirs(sandbox_dir, exist_ok=True)
     os.makedirs(audit_dir, exist_ok=True)
     os.makedirs(egress_state_dir, exist_ok=True)
-
-    # Create docker socket file (simulated)
-    open(docker_sock, "w").close()
 
     # Create valid seccomp profile
     with open(seccomp_path, "w") as f:
@@ -80,7 +76,7 @@ def _make_config(tmp_dir: str, **overrides) -> HubConfig:
         }, f)
 
     kwargs = dict(
-        docker_socket_path=docker_sock,
+        worker_proxy_url="http://test-proxy:9100",
         worker_base_image="drnt-worker:latest",
         sandbox_base_dir=sandbox_dir,
         seccomp_profile_path=seccomp_path,
@@ -137,35 +133,37 @@ def _assert_valid_envelope(evt, *, event_type, source):
 class TestSandboxEnvironment:
     """Item 8: Sandbox environment validation."""
 
-    def test_docker_socket_accessible_passes(self):
-        """Docker socket exists → sandbox check passes (sub-check)."""
+    def test_worker_proxy_accessible_passes(self):
+        """Worker proxy reachable → sandbox check passes (sub-check)."""
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp)
             validator = StartupValidator(config)
-            # Mock _check_base_image to avoid calling docker CLI
+            validator._check_docker_socket = lambda: True
             validator._check_base_image = lambda: True
             result = validator.check_sandbox_environment()
             assert result.passed is True
             assert result.check_name == "sandbox_environment"
-            assert result.details["docker_socket_accessible"] is True
+            assert result.details["worker_proxy_accessible"] is True
 
-    def test_docker_socket_missing_critical_fail(self):
-        """Docker socket missing → critical failure."""
+    def test_worker_proxy_unavailable_critical_fail(self):
+        """Worker proxy unreachable → critical failure."""
         with tempfile.TemporaryDirectory() as tmp:
-            config = _make_config(tmp, docker_socket_path="/nonexistent/docker.sock")
+            config = _make_config(tmp)
             validator = StartupValidator(config)
+            validator._check_docker_socket = lambda: False
             validator._check_base_image = lambda: True
             result = validator.check_sandbox_environment()
             assert result.passed is False
             assert result.severity == "critical"
-            assert result.details["docker_socket_accessible"] is False
-            assert "Docker socket" in result.message
+            assert result.details["worker_proxy_accessible"] is False
+            assert "Worker proxy" in result.message
 
     def test_base_image_exists_passes(self):
         """Base image exists → sandbox check passes (sub-check)."""
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp)
             validator = StartupValidator(config)
+            validator._check_docker_socket = lambda: True
             validator._check_base_image = lambda: True
             result = validator.check_sandbox_environment()
             assert result.details["base_image_exists"] is True
@@ -175,6 +173,7 @@ class TestSandboxEnvironment:
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp)
             validator = StartupValidator(config)
+            validator._check_docker_socket = lambda: True
             validator._check_base_image = lambda: False
             result = validator.check_sandbox_environment()
             assert result.passed is False
@@ -187,6 +186,7 @@ class TestSandboxEnvironment:
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp)
             validator = StartupValidator(config)
+            validator._check_docker_socket = lambda: True
             validator._check_base_image = lambda: True
             result = validator.check_sandbox_environment()
             assert result.details["sandbox_dir_writable"] is True
@@ -196,6 +196,7 @@ class TestSandboxEnvironment:
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp, sandbox_base_dir="/nonexistent/sandbox")
             validator = StartupValidator(config)
+            validator._check_docker_socket = lambda: True
             validator._check_base_image = lambda: True
             result = validator.check_sandbox_environment()
             assert result.passed is False
@@ -207,6 +208,7 @@ class TestSandboxEnvironment:
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp)
             validator = StartupValidator(config)
+            validator._check_docker_socket = lambda: True
             validator._check_base_image = lambda: True
             result = validator.check_sandbox_environment()
             assert result.details["seccomp_profile_valid"] is True
@@ -219,6 +221,7 @@ class TestSandboxEnvironment:
             with open(config.seccomp_profile_path, "w") as f:
                 f.write("{not valid json")
             validator = StartupValidator(config)
+            validator._check_docker_socket = lambda: True
             validator._check_base_image = lambda: True
             result = validator.check_sandbox_environment()
             assert result.passed is False
@@ -450,6 +453,7 @@ class TestHubIntegration:
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp)
             validator = StartupValidator(config)
+            validator._check_docker_socket = lambda: True
             validator._check_base_image = lambda: True
             report = await validator.validate_all()
             assert report.hub_start_permitted is True
@@ -460,8 +464,9 @@ class TestHubIntegration:
     async def test_critical_failure_blocks_hub_start(self):
         """Any critical check fails → hub does not start."""
         with tempfile.TemporaryDirectory() as tmp:
-            config = _make_config(tmp, docker_socket_path="/nonexistent/docker.sock")
+            config = _make_config(tmp)
             validator = StartupValidator(config)
+            validator._check_docker_socket = lambda: False
             validator._check_base_image = lambda: False
             report = await validator.validate_all()
             assert report.hub_start_permitted is False
@@ -471,8 +476,9 @@ class TestHubIntegration:
     async def test_startup_blocked_event_emitted(self):
         """When hub is blocked, hub.startup_blocked event is produced."""
         with tempfile.TemporaryDirectory() as tmp:
-            config = _make_config(tmp, docker_socket_path="/nonexistent/docker.sock")
+            config = _make_config(tmp)
             validator = StartupValidator(config)
+            validator._check_docker_socket = lambda: False
             validator._check_base_image = lambda: False
             report = await validator.validate_all()
 
@@ -493,6 +499,7 @@ class TestHubIntegration:
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp)
             validator = StartupValidator(config)
+            validator._check_docker_socket = lambda: True
             validator._check_base_image = lambda: True
             report = await validator.validate_all()
 
@@ -517,6 +524,7 @@ class TestHubIntegration:
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp, ollama_url="http://127.0.0.1:99999")
             validator = StartupValidator(config)
+            validator._check_docker_socket = lambda: True
             validator._check_base_image = lambda: True
             report = await validator.validate_all()
             # Hub should start — Ollama unreachable is only a warning
@@ -528,8 +536,9 @@ class TestHubIntegration:
     async def test_startup_validation_error_raised(self):
         """StartupValidationError carries the report and descriptive message."""
         with tempfile.TemporaryDirectory() as tmp:
-            config = _make_config(tmp, docker_socket_path="/nonexistent/docker.sock")
+            config = _make_config(tmp)
             validator = StartupValidator(config)
+            validator._check_docker_socket = lambda: False
             validator._check_base_image = lambda: False
             report = await validator.validate_all()
             err = StartupValidationError(report)
@@ -543,6 +552,7 @@ class TestHubIntegration:
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp)
             validator = StartupValidator(config)
+            validator._check_docker_socket = lambda: True
             validator._check_base_image = lambda: True
             report = await validator.validate_all()
 
@@ -580,7 +590,7 @@ class TestDataclasses:
             passed=True,
             severity="critical",
             message="All good",
-            details={"docker_socket_accessible": True},
+            details={"worker_proxy_accessible": True},
             checked_at="2026-04-03T00:00:00.000000Z",
         )
         assert cr.check_name == "sandbox_environment"

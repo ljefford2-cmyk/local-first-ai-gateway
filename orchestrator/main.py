@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 from audit_client import AuditLogClient
+from persistence import init_db, close_db
 from capability_registry import CapabilityRegistry
 from classifier import check_ollama_health
 from capability_state import CapabilityStateManager
@@ -114,7 +115,7 @@ async def lifespan(app: FastAPI):
     from events import event_hub_startup_validated, event_hub_startup_blocked
 
     hub_config = HubConfig(
-        docker_socket_path=os.environ.get("DRNT_DOCKER_SOCKET", "/var/run/docker.sock"),
+        worker_proxy_url=os.environ.get("DRNT_WORKER_PROXY_URL", "http://worker-proxy:9100"),
         worker_base_image=os.environ.get("DRNT_WORKER_IMAGE", "drnt-worker:latest"),
         sandbox_base_dir=os.environ.get("DRNT_SANDBOX_DIR", "/var/drnt/workers"),
         seccomp_profile_path=os.environ.get("DRNT_SECCOMP_PROFILE", "/var/drnt/config/seccomp-default.json"),
@@ -241,10 +242,9 @@ async def lifespan(app: FastAPI):
         _we = WorkerExecutor(
             sandbox_base_dir=os.environ.get("DRNT_SANDBOX_DIR", "/var/drnt/workers"),
             ollama_url=OLLAMA_URL,
-            sandbox_volume_name=os.environ.get("DRNT_SANDBOX_VOLUME"),
         )
         if not _we.check_docker_available():
-            logger.warning("Docker not available — worker executor disabled (direct dispatch fallback)")
+            logger.warning("Worker proxy not available — worker executor disabled (direct dispatch fallback)")
         else:
             _worker_image = os.environ.get("DRNT_WORKER_IMAGE", "drnt-worker:latest")
             if not _we.check_image_exists(_worker_image):
@@ -298,6 +298,13 @@ async def lifespan(app: FastAPI):
             exc_info=True,
         )
 
+    # Initialize SQLite persistence
+    try:
+        await init_db()
+        logger.info("SQLite persistence initialized")
+    except Exception:
+        logger.warning("SQLite persistence unavailable — using in-memory stores", exc_info=True)
+
     # Create job manager with full capability system
     job_manager = JobManager(
         audit_client=audit_client,
@@ -305,6 +312,7 @@ async def lifespan(app: FastAPI):
         permission_checker=_permission_checker,
         demotion_engine=_demotion_engine,
         worker_lifecycle=_worker_lifecycle,
+        connectivity_monitor=_connectivity_monitor,
     )
 
     # Phase 7F: Initialize hub state manager
@@ -324,10 +332,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("Ollama warm-up failed — first request may be slow")
 
-    # Phase 7D: Stale job recovery pass
-    # V1 limitation: in-memory only — recovery only covers jobs that
-    # survive process restart. No jobs survive V1 restarts; this
-    # infrastructure exists for when persistence is added.
+    # Phase 7D: Stale job recovery pass — scans persisted non-terminal jobs
     from stale_recovery import StaleJobRecovery
     from events import event_system_startup as _build_recovery_startup
 
@@ -340,6 +345,10 @@ async def lifespan(app: FastAPI):
         _recovery_report.jobs_skipped,
         _recovery_report.jobs_failed,
     )
+
+    # Persist any recovery-modified jobs back to SQLite
+    for _rjob in list(job_manager._jobs.values()):
+        job_manager._persist_job(_rjob)
 
     _recovery_event = _build_recovery_startup(
         recovery_summary={
@@ -369,6 +378,7 @@ async def lifespan(app: FastAPI):
         await _connectivity_monitor.stop_monitoring()
 
     await job_manager.stop()
+    await close_db()
     logger.info("Orchestrator stopped")
 
 
