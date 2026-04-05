@@ -1,7 +1,7 @@
 # Local-First AI Gateway
 
 > **DRNT Gateway v0.1.0** | Implementation repo
-> Canonical specs: [local-first-ai-orchestration](https://github.com/ljefford2-cmyk/local-first-ai-orchestration) (v6.0)
+> Canonical specs: [local-first-ai-orchestration](https://github.com/ljefford2-cmyk/local-first-ai-orchestration) (v7.0)
 > Claim-status matrix: [`STATUS.md`](STATUS.md)
 
 ## Repository Map
@@ -15,6 +15,18 @@ This is the **working implementation** repo. It is one of three repositories in 
 | [Local-AI-Orchestrator](https://github.com/ljefford2-cmyk/Local-AI-Orchestrator) | Historical / governance companion | Early-stage exploration, not the canonical implementation |
 
 The specifications live in `local-first-ai-orchestration`. The code that implements them lives here. If there is ever a conflict between a spec claim and what this repo contains, [`STATUS.md`](STATUS.md) is the source of truth for what is actually built.
+
+## Specifications Implemented
+
+| Spec | Name |
+|------|------|
+| 1 | Audit Log Writer |
+| 2 | Orchestrator Core |
+| 3 | Context Packager |
+| 4 | Egress Policy |
+| 5 | Override Semantics |
+| 6 | Worker Silo / Runtime Enforcement |
+| 7 | Signal Chain Resilience |
 
 ## Services
 
@@ -64,15 +76,15 @@ The `.env` file is gitignored. Only the example file is tracked. The `secrets/` 
 pytest tests/
 ```
 
-598 test functions across 27 files. All tests run against in-process Python objects with mocked I/O. See [`STATUS.md`](STATUS.md) for the full test taxonomy breakdown.
+647 tests across 30 files (629 passing, 18 skipped e2e integration). All unit tests run against in-process Python objects with mocked I/O. See [`STATUS.md`](STATUS.md) for the full test taxonomy breakdown.
 
 ## Known V1 Limitations
 
-- Job state, idempotency store, and rate limiter are in-memory — nothing survives a restart
-- Worker containers are not created; the sandbox preparation chain produces blueprints but does not call the Docker API
-- Egress proxy audit events accumulate in-memory, not yet wired to the durable audit log
-- Seccomp profile exists but is not applied in `docker-compose.yml`
-- No healthcheck directives in `docker-compose.yml`
+- Job state, idempotency store, and rate limiter are in-memory — nothing survives a restart (v0.2 item)
+- Worker containers not yet created by Docker API — the sandbox preparation chain produces blueprints only
+- ConnectivityMonitor not wired into dispatch — probes run but results are not used for routing decisions
+- Egress proxy audit events accumulate in-memory, not yet routed to the durable audit log
+- Seccomp profile exists but is not applied via `security_opt` in `docker-compose.yml`
 - Secrets are plain `.env` bind-mount with no rotation mechanism
 
-These are tracked in [`STATUS.md`](STATUS.md) and the [v0.1 gap closure project](https://github.com/ljefford2-cmyk/local-first-ai-gateway/issues).
+These are tracked in [`STATUS.md`](STATUS.md).
