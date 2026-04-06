@@ -62,10 +62,10 @@ Current posture in `docker-compose.yml`:
 - Secrets bind-mounted read-only (`./secrets:/var/drnt/secrets:ro`)
 - Config bind-mounted read-only (`./config:/var/drnt/config:ro`)
 - Dual network isolation (`drnt-internal` bridge, `drnt-external` bridge)
-- `seccomp-default.json` exists in `config/` and is validated at startup by `startup_validator.py`, but is not applied at Docker Compose level via `security_opt`
+- Seccomp is enforced on spawned worker containers via `worker_executor.py` using `config/seccomp-default.json`. It is not applied at the Docker Compose level to the four infrastructure services. Compose-level seccomp is a future hardening item
 - No AppArmor or SELinux profiles
 - No `read_only: true` on service filesystems (V2 consideration)
 
 ## 6. V1 Summary
 
-DRNT v0.1 is a single-user, self-hosted control plane for personal AI orchestration. Its security model assumes a trusted operator on a trusted host. The primary V1 contribution is auditable governance — every decision, override, and egress request is hash-chained into a tamper-evident log. The primary V1 gap is execution-plane enforcement — the architecture describes worker sandboxing in detail, but V1 validates manifests without creating actual containers. This is an intentional sequencing decision: prove the governance model works before adding the execution boundary.
+V1 creates worker containers with seccomp enforcement and file-based I/O. The sandbox preparation chain produces blueprints that are executed by worker_executor.py. Workers run with no network access by default and use the seccomp profile from config/seccomp-default.json.

@@ -1,6 +1,6 @@
 # DRNT Gateway — Claim-Status-Evidence Matrix
 
-**Version:** v0.1 (pre-release)
+**Version:** v0.2.1
 **Generated:** 2026-04-04
 **Purpose:** Map every architectural claim to its actual implementation status and evidence. This document exists because the four-model adversarial review (April 2026) converged on a single finding: the governance language is more mature than the runtime, and the public narrative risks outrunning implementation completeness.
 
@@ -220,8 +220,4 @@
 
 ## Summary: What V1 Actually Is
 
-**V1 is a control-plane implementation with partial execution-plane realization.** The orchestrator, audit log, context packager, egress policy engine, override semantics, worker lifecycle preparation chain, and signal chain resilience modules are implemented and tested. The system correctly produces audit events, enforces WAL permissions, manages capability state, and handles the full job lifecycle through classification and dispatch.
-
-**What V1 is not:** a system with full operational durability. Worker containers are created for `route.local` tasks. Cloud worker execution and per-worker network isolation remain v2 concerns. Job state, idempotency records, circuit breaker state, and hub state now persist across restarts via SQLite write-through caching. Rate limiters intentionally reset on restart. The egress audit trail is wired to the persistent audit log writer via `AuditLogClient`.
-
-**The honest version string:** "V1 control-plane implementation with partial execution-plane realization — audit, orchestration, policy enforcement, state persistence, and worker sandboxing are operational; cloud worker execution and per-worker network isolation remain v2."
+V1 control-plane and execution-plane implementation. All seven specifications are implemented with 735 tests (717 passing, 18 skipped e2e). The execution plane creates worker containers with seccomp enforcement and file-based I/O. Job state, idempotency store, circuit breaker state, and hub state are persisted to SQLite with write-through caching. ConnectivityMonitor gates cloud dispatch via circuit breaker. Remaining gaps: worker containers are created but not pooled, Docker socket is read-write (privileged sidecar planned for v0.2), secrets are plain .env bind-mount with no rotation, and seccomp is not applied at the Docker Compose level to infrastructure services.

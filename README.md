@@ -1,6 +1,6 @@
 # Local-First AI Gateway
 
-> **DRNT Gateway v0.1.0** | Implementation repo
+> **DRNT Gateway v0.2.1** | Implementation repo
 > Canonical specs: [local-first-ai-orchestration](https://github.com/ljefford2-cmyk/local-first-ai-orchestration) (v7.0)
 > Claim-status matrix: [`STATUS.md`](STATUS.md)
 
@@ -82,7 +82,7 @@ pytest tests/
 ## Known V1 Limitations
 
 - Rate limiter is in-memory — counters reset on restart (v0.2 item)
-- Seccomp profile exists but is not applied via `security_opt` in `docker-compose.yml`
+- Seccomp profile is enforced on spawned worker containers via `worker_executor.py` but is not applied at the Docker Compose level to the four infrastructure services (orchestrator, audit-log-writer, egress-gateway, ollama)
 - Secrets are plain `.env` bind-mount with no rotation mechanism
 
 These are tracked in [`STATUS.md`](STATUS.md).
