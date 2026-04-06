@@ -45,7 +45,7 @@ services:
       - DRNT_AUTO_ACCEPT_WINDOW=${DRNT_AUTO_ACCEPT_WINDOW_SECONDS:-86400}
       - DRNT_AUTO_ACCEPT_POLL_INTERVAL=${DRNT_AUTO_ACCEPT_POLL_SECONDS:-60}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - audit-socket:/var/drnt/sockets:ro
       - audit-logs:/var/drnt/audit:ro
@@ -106,7 +106,7 @@ services:
     volumes:
       - ollama-data:/root/.ollama
     ports:
-      - "11434:11434"
+      - "127.0.0.1:11434:11434"
     networks:
       - drnt-internal
       - drnt-external

@@ -29,7 +29,7 @@ DRNT was designed around this principle, and the build process proved it empiric
 
 When these constraints were loose, output quality was poor. When they tightened, the same models — with no capability upgrade — produced clean, verified, zero-regression output across 735 tests and seven specification implementations.
 
-The implication extends beyond this project. The local model's value is not that it is smart. It is that it knows what it doesn't know, it enforces structural privacy before anything leaves the local perimeter, and it never promotes its own trust level. Better outcomes come from better governance of capable models, not from making models more capable and hoping they self-govern.
+The implication extends beyond this project. The local model's value is not that it is smart. It is that it knows what it doesn't know, it enforces structural privacy before anything leaves the local perimeter (current implementation: regex-based PII redaction with sensitivity allowlists, single-field context packaging; multi-field context assembly and advanced NER are v0.2 scope items), and it never promotes its own trust level. Better outcomes come from better governance of capable models, not from making models more capable and hoping they self-govern.
 
 ## Specifications Implemented
 
@@ -72,6 +72,8 @@ The implication extends beyond this project. The local model's value is not that
 docker compose up --build
 ```
 
+**⚠️ Not designed for internet exposure.** This system is designed for single-user, trusted-local-network operation. The API endpoints have no authentication. Do not expose ports to the public internet.
+
 The orchestrator listens on port 8000. Ollama is available on port 11434.
 
 ## Secrets
@@ -92,7 +94,11 @@ The `.env` file is gitignored. Only the example file is tracked. The `secrets/` 
 pytest tests/
 ```
 
-735 tests across 34 files (717 passing, 18 skipped e2e integration). All unit tests run against in-process Python objects with mocked I/O. See [`STATUS.md`](STATUS.md) for the full test taxonomy breakdown.
+735 tests across 34 files (717 passing, 18 skipped e2e integration). All unit tests run against in-process Python objects with mocked I/O. These tests provide mocked-path regression confidence. End-to-end tests against a running Docker Compose stack are a v0.2 deliverable. See [`STATUS.md`](STATUS.md) for the full test taxonomy breakdown.
+
+## Development
+
+**Dependency model:** This is a Docker-first monorepo. Each service manages its own `requirements.txt`. The root `pyproject.toml` contains shared pytest configuration only. For local development without Docker, install dependencies from the relevant service directory.
 
 ## Known V1 Limitations
 

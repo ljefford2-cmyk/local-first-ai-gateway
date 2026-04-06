@@ -1,4 +1,4 @@
-# DRNT v0.1 — Threat Model and Non-Goals
+# DRNT v0.2.1 — Threat Model and Non-Goals
 
 ## 1. Scope and Audience
 
@@ -37,6 +37,8 @@ DRNT is a single-user, self-hosted personal AI gateway. The operator is the only
 **3. Hostile local user** — If another user on the host can access the Docker socket or the filesystem, they have full access. Mitigation: standard Unix file permissions. Not a DRNT concern.
 
 **4. Docker socket escalation** — The orchestrator no longer mounts the Docker socket. All Docker operations (container lifecycle, image checks, health probes) are delegated to the `worker-proxy` sidecar via HTTP API (`POST /containers/run`, `GET /images/{name}`, `GET /health`). The Docker socket is isolated to the `worker-proxy` service, which is the sole process with socket access. The orchestrator has zero Docker SDK imports or direct socket usage. This eliminates the container enumeration and information disclosure attack surface from the orchestrator. The `worker-proxy` itself runs on `drnt-internal` only and exposes a constrained API surface — no arbitrary Docker commands are proxied.
+
+**Worker-Proxy Boundary (v0.1–v0.2 limitation):** The current worker-proxy accepts a broad parameter set that mirrors `client.containers.create()`. It isolates the Docker socket from the orchestrator but does not enforce a server-side allowlist on container configuration fields. Any service on the internal network that can reach the proxy can request capabilities beyond what a narrow worker blueprint should permit. This is an accepted v0.1–v0.2 risk. The planned mitigation is replacement of the proxy with a privileged sidecar pattern that enforces a fixed worker blueprint, eliminating both the broad parameter surface and direct Docker socket access. Tracked as a v0.2 scope item.
 
 **5. Secrets at rest** — API keys stored in plaintext `.env` file on a bind-mount (`./secrets:/var/drnt/secrets:ro`). No encryption, no vault, no rotation, no expiry tracking. Mitigation path: V2 integrates with a secrets manager (Docker secrets, HashiCorp Vault). V1 accepts this because the operator controls the host filesystem.
 

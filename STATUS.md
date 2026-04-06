@@ -106,7 +106,7 @@
 |---|-------|--------|----------|
 | 4.8 | Egress audit events persisted to durable log | **Implemented** | `egress_proxy.py:log_request()` routes egress audit events to the durable audit log via `audit_client.emit_durable()`. 14 dedicated tests in `test_durable_egress_audit.py` confirm the wiring. |
 | 4.9 | Secrets rotation mechanism | **Aspirational** | Secrets are plain `.env` file on a bind-mount. No rotation, no vault integration, no expiry tracking. Identified in adversarial review. |
-| 4.10 | Seccomp profile applied to services | **Implemented** | `config/seccomp-default.json` exists with a default-deny policy and explicit syscall allowlist. `worker_lifecycle.py` resolves the profile path via `DRNT_SECCOMP_PROFILE` env var and passes it to `worker_executor.py`, which applies it via `security_opt=["no-new-privileges", "seccomp=<path>"]` on container creation. |
+| 4.10 | Seccomp profile applied to worker containers | **Implemented** | `config/seccomp-default.json` exists with a default-deny policy and explicit syscall allowlist. `worker_lifecycle.py` resolves the profile path via `DRNT_SECCOMP_PROFILE` env var and passes it to `worker_executor.py`, which applies it via `security_opt=["no-new-privileges", "seccomp=<path>"]` on container creation. |
 
 ---
 
