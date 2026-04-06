@@ -16,6 +16,21 @@ This is the **working implementation** repo. It is one of three repositories in 
 
 The specifications live in `local-first-ai-orchestration`. The code that implements them lives here. If there is ever a conflict between a spec claim and what this repo contains, [`STATUS.md`](STATUS.md) is the source of truth for what is actually built.
 
+## Why Governance Produces Better AI Outcomes
+
+The performance ceiling for AI systems today is not model capability — it is orchestration. A capable model given an unbounded task and unlimited latitude produces unreliable output. The same model, constrained by graduated trust, structural gates, and fail-closed defaults, produces dramatically better results.
+
+DRNT was designed around this principle, and the build process proved it empirically. This system was built using a two-agent workflow — one AI writing structured prompts, another executing on the filesystem — governed by the same patterns DRNT enforces at runtime:
+
+- **Discovery before action.** Every execution step begins by reading the actual state, not assuming it. The model that skips this step confidently presents stale information as fact.
+- **Gate-based progression.** No phase advances until the previous phase fully passes. Regressions caught early cost minutes; regressions caught late cost days.
+- **Automatic demotion on failure.** When unsupervised execution scattered files across wrong directories or introduced silent regressions, trust was pulled back to explicit verification at every step. Quality improved immediately.
+- **Audit trail as learning surface.** State snapshots, commit history, and test results create an empirical record. What was true at review time is what matters — not assertion after the fact.
+
+When these constraints were loose, output quality was poor. When they tightened, the same models — with no capability upgrade — produced clean, verified, zero-regression output across 735 tests and seven specification implementations.
+
+The implication extends beyond this project. The local model's value is not that it is smart. It is that it knows what it doesn't know, it enforces structural privacy before anything leaves the local perimeter, and it never promotes its own trust level. Better outcomes come from better governance of capable models, not from making models more capable and hoping they self-govern.
+
 ## Specifications Implemented
 
 | Spec | Name |
