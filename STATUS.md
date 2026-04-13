@@ -1,7 +1,7 @@
 # DRNT Gateway — Claim-Status-Evidence Matrix
 
 **Version:** v0.2.1
-**Generated:** 2026-04-04
+**Generated:** 2026-04-12
 **Purpose:** Map every architectural claim to its actual implementation status and evidence. This document exists because the four-model adversarial review (April 2026) converged on a single finding: the governance language is more mature than the runtime, and the public narrative risks outrunning implementation completeness.
 
 **Status definitions:**
@@ -212,12 +212,12 @@
 | Worker Proxy | `test_worker_proxy.py` | 25 | Unit (mocked Docker SDK) |
 | Persistence | `test_job_persistence.py`, `test_idempotency_persistence.py`, `test_hub_state_persistence.py`, `test_circuit_breaker_persistence.py` | 40 | Unit (SQLite) |
 | Dispatch Gating | `test_connectivity_dispatch_gating.py` | 18 | Unit |
-| **Total** | **34 files** | **735** | |
+| **Total** | **34 files** | **763** | |
 
-**Test taxonomy note:** 735 tests collected (717 passed, 18 skipped e2e integration requiring Docker stack). The 717 passing tests run against in-process Python objects with mocked I/O. The `test_integration_e2e.py` file tests the FastAPI app with `TestClient` against mocked backends — it is integration-level but not end-to-end in the operational sense.
+**Test taxonomy note:** 763 tests collected (745 passed, 18 skipped e2e integration requiring Docker stack). The 745 passing tests run against in-process Python objects with mocked I/O. The `test_integration_e2e.py` file tests the FastAPI app with `TestClient` against mocked backends — it is integration-level but not end-to-end in the operational sense.
 
 ---
 
 ## Summary: What V1 Actually Is
 
-V1 control-plane and execution-plane implementation. All seven specifications are implemented with 735 tests (717 passing, 18 skipped e2e). The execution plane creates worker containers with seccomp enforcement and file-based I/O. Job state, idempotency store, circuit breaker state, and hub state are persisted to SQLite with write-through caching. ConnectivityMonitor gates cloud dispatch via circuit breaker. Remaining gaps: worker containers are created but not pooled, Docker socket is read-write (privileged sidecar planned for v0.2), secrets are plain .env bind-mount with no rotation, and seccomp is not applied at the Docker Compose level to infrastructure services.
+V1 control-plane and execution-plane implementation. All seven specifications are implemented with 763 tests (745 passing, 18 skipped e2e). The execution plane creates worker containers with seccomp enforcement and file-based I/O. Job state, idempotency store, circuit breaker state, and hub state are persisted to SQLite with write-through caching. ConnectivityMonitor gates cloud dispatch via circuit breaker. Remaining gaps: worker containers are created but not pooled, Docker socket is read-write (privileged sidecar planned for v0.2), secrets are plain .env bind-mount with no rotation, and seccomp is not applied at the Docker Compose level to infrastructure services.
