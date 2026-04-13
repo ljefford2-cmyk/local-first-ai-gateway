@@ -141,7 +141,6 @@ validation blocks the orchestrator from accepting jobs (Spec 6D).
 | GPU passthrough | v1 targets CPU-only Ollama inference on Raspberry Pi hardware |
 | Persistent state | Workers are stateless; every task starts from a clean container |
 | Multi-task batching | One task per container; batching adds scheduling complexity |
-| Seccomp custom profile | v1 uses Docker's default seccomp profile; custom profiles are v2 |
 | Disk quota enforcement | v1 relies on read-only rootfs + tmpfs size limits; `storage_opt` quota requires specific storage drivers |
 
 ## Security Tradeoffs

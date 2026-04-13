@@ -168,7 +168,7 @@
 
 | # | Claim | Status | Evidence |
 |---|-------|--------|----------|
-| 7.1 | Comprehensive event type taxonomy | Implemented | `orchestrator/events.py` — builders for job lifecycle, WAL, egress, context, override, system, connectivity, hub state, and worker events. 647 tests across 30 files exercise these. |
+| 7.1 | Comprehensive event type taxonomy | Implemented | `orchestrator/events.py` — builders for job lifecycle, WAL, egress, context, override, system, connectivity, hub state, and worker events. 28 test files exercise these. |
 | 7.2 | Idempotency key deduplication | Implemented | `orchestrator/idempotency_store.py` — `check_and_store()` returns existing job on duplicate key. `job_manager.py:submit_job()` checks before creating. |
 | 7.3 | Connectivity monitor with circuit breakers | Implemented | `orchestrator/connectivity_monitor.py` — per-route `RouteHealth`, three circuit states (CLOSED/OPEN/HALF_OPEN), hysteresis thresholds (2 failures → open, 3 successes → closed). Background probe loop. `JobManager._run_pipeline()` checks `is_route_available()` before cloud dispatch; OPEN routes fail-fast with `route_unavailable`. |
 | 7.4 | Stale job recovery on startup | Implemented | `orchestrator/stale_recovery.py` — scans non-terminal jobs, applies recovery actions by state (re-classify, re-dispatch, deliver). Re-dispatch cap of 2 per job. |
@@ -181,7 +181,7 @@
 | # | Claim | Status | Evidence |
 |---|-------|--------|----------|
 | 7.8 | Idempotency store survives restart | **Implemented** | `idempotency_store.py` uses write-through SQLite cache via the `state` table. Records loaded on startup. Tested in `test_idempotency_persistence.py` (restart survival, TTL cleanup, fallback). |
-| 7.9 | Stale recovery actually recovers jobs | **Implemented** | Recovery infrastructure is complete and tested (30 tests in `test_spec7d_stale_recovery.py`). Job state now persists via SQLite — non-terminal jobs are loaded on startup and stale recovery finds them. Tested in `test_job_persistence.py:test_stale_recovery_finds_persisted_jobs`. |
+| 7.9 | Stale recovery actually recovers jobs | **Implemented** | Recovery infrastructure is complete and tested (`test_spec7d_stale_recovery.py`). Job state now persists via SQLite — non-terminal jobs are loaded on startup and stale recovery finds them. Tested in `test_job_persistence.py:test_stale_recovery_finds_persisted_jobs`. |
 | 7.10 | Connectivity probes hit real endpoints | **Partial** | `connectivity_monitor.py:probe_route()` uses `httpx.AsyncClient` to issue HTTP HEAD requests. Probes are wired into the startup lifecycle and background loop. Actual probing depends on running services and network access. |
 | 7.11 | Hub failover between multiple hubs | **Partial** | `HubStateManager` supports the state machine and authority confirmation protocol. However, there is no multi-hub discovery, no shared state backend, and no automatic failover. The system assumes exactly one hub with human-initiated switching. |
 
@@ -201,23 +201,23 @@
 
 ## Test Coverage Summary
 
-| Category | Files | Test Functions | Scope |
-|----------|-------|---------------|-------|
-| Spec 5 (Override Semantics) | `test_phase5a–5e.py` | 69 | Unit (mocked audit client) |
-| Spec 6 (Worker Silo) | `test_phase6a–6e.py` | 147 | Unit (no real containers) |
-| Worker Execution | `test_worker_executor.py` | 29 | Unit (mocked Docker SDK) |
-| Spec 7 (Signal Chain) | `test_spec7a–7f.py` | 181 | Unit (mocked deps) |
-| Core modules | `test_capability_registry.py`, `test_context_packager.py`, `test_demotion_engine.py`, `test_permission_checker.py`, `test_promotion_monitor.py`, `test_admin_routes.py`, `test_startup.py`, `test_banked_items.py`, `test_be_ordering.py` | 174 | Unit |
-| Integration | `test_integration_e2e.py` | 27 | Integration (mocked external services) |
-| Worker Proxy | `test_worker_proxy.py` | 25 | Unit (mocked Docker SDK) |
-| Persistence | `test_job_persistence.py`, `test_idempotency_persistence.py`, `test_hub_state_persistence.py`, `test_circuit_breaker_persistence.py` | 40 | Unit (SQLite) |
-| Dispatch Gating | `test_connectivity_dispatch_gating.py` | 18 | Unit |
-| **Total** | **34 files** | **763** | |
+| Category | Files | Scope |
+|----------|-------|-------|
+| Spec 5 (Override Semantics) | `test_phase5a–5e.py` | Unit (mocked audit client) |
+| Spec 6 (Worker Silo) | `test_phase6a–6e.py` | Unit (no real containers) |
+| Worker Execution | `test_worker_executor.py` | Unit (mocked Docker SDK) |
+| Spec 7 (Signal Chain) | `test_spec7a–7f.py` | Unit (mocked deps) |
+| Core modules | `test_capability_registry.py`, `test_context_packager.py`, `test_demotion_engine.py`, `test_permission_checker.py`, `test_promotion_monitor.py`, `test_admin_routes.py`, `test_startup.py`, `test_banked_items.py`, `test_be_ordering.py` | Unit |
+| Integration | `test_integration_e2e.py` | Integration (mocked external services) |
+| Worker Proxy | `test_worker_proxy.py` | Unit (mocked Docker SDK) |
+| Persistence | `test_job_persistence.py`, `test_idempotency_persistence.py`, `test_hub_state_persistence.py`, `test_circuit_breaker_persistence.py` | Unit (SQLite) |
+| Dispatch Gating | `test_connectivity_dispatch_gating.py` | Unit |
+| **Total** | **28 test files** | |
 
-**Test taxonomy note:** 763 tests collected (745 passed, 18 skipped e2e integration requiring Docker stack). The 745 passing tests run against in-process Python objects with mocked I/O. The `test_integration_e2e.py` file tests the FastAPI app with `TestClient` against mocked backends — it is integration-level but not end-to-end in the operational sense.
+**Test taxonomy note:** Tests are collected across 28 test files; 18 e2e integration tests are skipped when the Docker Compose stack is not running. The passing tests run against in-process Python objects with mocked I/O. The `test_integration_e2e.py` file tests the FastAPI app with `TestClient` against mocked backends — it is integration-level but not end-to-end in the operational sense.
 
 ---
 
 ## Summary: What V1 Actually Is
 
-V1 control-plane and execution-plane implementation. All seven specifications are implemented with 763 tests (745 passing, 18 skipped e2e). The execution plane creates worker containers with seccomp enforcement and file-based I/O. Job state, idempotency store, circuit breaker state, and hub state are persisted to SQLite with write-through caching. ConnectivityMonitor gates cloud dispatch via circuit breaker. Remaining gaps: worker containers are created but not pooled, secrets are plain .env bind-mount with no rotation, and seccomp is not applied at the Docker Compose level to infrastructure services.
+V1 control-plane and execution-plane implementation. All seven specifications are implemented with test coverage across 28 test files (18 e2e integration tests are skipped when the Docker Compose stack is not running). The execution plane creates worker containers with seccomp enforcement and file-based I/O. Job state, idempotency store, circuit breaker state, and hub state are persisted to SQLite with write-through caching. ConnectivityMonitor gates cloud dispatch via circuit breaker. Remaining gaps: worker containers are created but not pooled, secrets are plain .env bind-mount with no rotation, and seccomp is not applied at the Docker Compose level to infrastructure services.

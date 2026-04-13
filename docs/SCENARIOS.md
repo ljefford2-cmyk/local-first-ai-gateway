@@ -438,7 +438,7 @@ HTTP response (on `GET /jobs/{id}`):
 
 ## Reading This Document
 
-- These scenarios trace the code as of **v0.1**. The pipeline, event types, and fallback behaviors reflect the current implementation and may change in future versions.
+- These scenarios trace the code as of **v0.2.1**. The pipeline, event types, and fallback behaviors reflect the current implementation and may change in future versions.
 - For claim-level implementation status, see [STATUS.md](../STATUS.md).
 - For worker execution details (sandbox constraints, file I/O schema, security tradeoffs), see [docs/WORKER-EXECUTION.md](WORKER-EXECUTION.md).
 - For spec-to-code mapping, see [docs/SPEC-MAP.md](SPEC-MAP.md).

@@ -29,21 +29,20 @@ For per-claim detail, see [STATUS.md](../STATUS.md).
 
 ## Test Coverage Summary
 
-| Spec | Test Files | Test Functions |
-|------|-----------|----------------|
-| 1 -- Audit/Event Schema | 1 | 4 |
-| 2 -- Capability Model (WAL → Permissions) | 2 | 46 |
-| 3 -- Context Boundary Specification | 1 | 22 |
-| 4 -- Egress Policy Binding | 3 | 77 |
-| 5 -- Override Semantics | 10 | 180 |
-| 6 -- Silo Runtime Security | 6 | 176 |
-| 7 -- Signal Chain Resilience | 6 | 181 |
-| Cross-cutting (admin routes) | 1 | 18 |
-| **Total (deduplicated)** | **34** | See [STATUS.md](../STATUS.md) |
+| Spec | Test Files |
+|------|-----------|
+| 1 -- Audit/Event Schema | 1 |
+| 2 -- Capability Model (WAL → Permissions) | 2 |
+| 3 -- Context Boundary Specification | 1 |
+| 4 -- Egress Policy Binding | 3 |
+| 5 -- Override Semantics | 10 |
+| 6 -- Silo Runtime Security | 6 |
+| 7 -- Signal Chain Resilience | 6 |
+| Cross-cutting (admin routes) | 1 |
+| **Total (deduplicated)** | **28** |
 
-Note: `test_phase6c.py` (30 tests) and `test_phase6d.py` (32 tests) are shared between Specs 4 and 6.
+Note: `test_phase6c.py` and `test_phase6d.py` are shared between Specs 4 and 6.
 Per-spec totals count these tests under both specs; the deduplicated total counts each test once.
-Additional test files since initial tally: persistence tests (`test_job_persistence.py`, `test_idempotency_persistence.py`, `test_hub_state_persistence.py`, `test_circuit_breaker_persistence.py`), `test_connectivity_dispatch_gating.py`, `test_worker_proxy.py`, `test_integration_lifecycle.py`.
 
 ---
 
