@@ -858,20 +858,18 @@ class TestLifecycleSeccompNetworkPlumbing:
     """Lifecycle passes seccomp and network_mode through to executor."""
 
     @pytest.mark.asyncio
-    async def test_passes_seccomp_profile_from_env(self, tmp_path):
-        """execute_in_worker passes DRNT_SECCOMP_PROFILE to executor when path is non-default."""
+    async def test_passes_seccomp_profile_content(self, tmp_path):
+        """execute_in_worker passes cached seccomp profile content to executor."""
         lifecycle, audit, executor = _make_lifecycle_with_executor(tmp_path)
+        lifecycle._seccomp_profile_content = '{"defaultAction":"SCMP_ACT_ERRNO"}'
         job = _make_job()
         ctx = await lifecycle.prepare_worker(job)
-        # Set a non-default seccomp path so the env var is honoured
-        ctx.blueprint.security_config.seccomp_profile_path = "/custom/seccomp.json"
         audit.clear()
 
-        with patch.dict(os.environ, {"DRNT_SECCOMP_PROFILE": "/var/drnt/config/seccomp-default.json"}):
-            await lifecycle.execute_in_worker(ctx, prompt="hello")
+        await lifecycle.execute_in_worker(ctx, prompt="hello")
 
         sc = executor.last_kwargs["security_config"]
-        assert sc["seccomp_profile"] == "/var/drnt/config/seccomp-default.json"
+        assert sc["seccomp_profile"] == '{"defaultAction":"SCMP_ACT_ERRNO"}'
 
     @pytest.mark.asyncio
     async def test_passes_network_mode_none_for_empty_egress(self, tmp_path):

@@ -43,6 +43,7 @@ class HubConfig:
     worker_base_image: str = "drnt-worker:latest"
     sandbox_base_dir: str = "/var/drnt/workers"
     seccomp_profile_path: str = "/var/drnt/config/seccomp-default.json"
+    seccomp_profile_content: str | None = None
     egress_config_path: str = "/var/drnt/config/egress.json"
     ollama_url: str = "http://ollama:11434"
     audit_log_dir: str = "/var/drnt/audit"
@@ -258,13 +259,19 @@ class StartupValidator:
         return os.path.isdir(d) and os.access(d, os.W_OK)
 
     def _check_seccomp_profile(self) -> tuple[bool, str]:
-        """Check that the seccomp profile exists and is valid JSON."""
+        """Check that the seccomp profile exists and is valid JSON.
+
+        On success, caches the raw JSON string in config.seccomp_profile_content
+        so the worker-spawn path can pass it inline to the Docker API.
+        """
         path = self._config.seccomp_profile_path
         if not os.path.isfile(path):
             return False, f"Seccomp profile not found: {path}"
         try:
             with open(path, "r", encoding="utf-8") as f:
-                json.load(f)
+                raw = f.read()
+            json.loads(raw)
+            self._config.seccomp_profile_content = raw
             return True, ""
         except (json.JSONDecodeError, OSError) as e:
             return False, f"Seccomp profile invalid: {e}"

@@ -206,6 +206,62 @@ class TestWorkerExecution:
         assert payload.get("cap_drop_count", 0) >= 1, "Expected cap_drop_count >= 1"
 
     @pytest.mark.asyncio
+    async def test_worker_seccomp_profile_applied(self):
+        """Verify worker container has seccomp profile in SecurityOpt."""
+        await ensure_hub_active()
+
+        if not await ollama_available():
+            pytest.skip("Ollama not available")
+
+        import json as _json
+
+        worker_cid = None
+
+        async def _poll_for_worker(job_id: str) -> str | None:
+            """Poll docker for a worker container matching this job."""
+            for _ in range(60):
+                result = subprocess.run(
+                    ["docker", "ps", "-a", "--filter", "label=drnt.role=worker",
+                     "--filter", f"label=drnt.job_id={job_id}",
+                     "--format", "{{.ID}}"],
+                    capture_output=True, text=True,
+                )
+                cid = result.stdout.strip().split("\n")[0].strip()
+                if cid:
+                    return cid
+                await asyncio.sleep(0.25)
+            return None
+
+        # Submit the job and poll for the worker container concurrently
+        job_sub = await submit_job("Seccomp enforcement test: what is 1+1?")
+        job_id = job_sub["job_id"]
+        worker_cid = await _poll_for_worker(job_id)
+
+        if not worker_cid:
+            pytest.skip("Worker container not found — may have been GC'd too fast")
+
+        # Inspect SecurityOpt on the actual container
+        inspect = subprocess.run(
+            ["docker", "inspect", worker_cid, "--format",
+             "{{json .HostConfig.SecurityOpt}}"],
+            capture_output=True, text=True,
+        )
+        sec_opts = _json.loads(inspect.stdout.strip())
+
+        seccomp_entries = [s for s in sec_opts if s.startswith("seccomp=")]
+        assert len(seccomp_entries) == 1, (
+            f"Expected exactly one seccomp= entry in SecurityOpt, got {sec_opts}"
+        )
+        profile_json = seccomp_entries[0][len("seccomp="):]
+        profile = _json.loads(profile_json)
+        assert profile.get("defaultAction") == "SCMP_ACT_ERRNO", (
+            f"Seccomp profile defaultAction is not SCMP_ACT_ERRNO: {profile.get('defaultAction')}"
+        )
+
+        # Let the job finish so it doesn't interfere with later tests
+        await wait_for_job(job_id, timeout=TIMEOUT)
+
+    @pytest.mark.asyncio
     async def test_worker_network_isolation(self):
         """Verify sandboxed execution via worker.prepared audit events."""
         await ensure_hub_active()

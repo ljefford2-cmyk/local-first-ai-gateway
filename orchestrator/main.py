@@ -266,6 +266,7 @@ async def lifespan(app: FastAPI):
         rate_limiter=_rate_limiter,
         state_manager=_state_manager,
         worker_executor=_worker_executor,
+        seccomp_profile_content=hub_config.seccomp_profile_content,
     )
     logger.info(
         "Worker lifecycle initialized (executor=%s)",

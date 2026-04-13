@@ -13,7 +13,6 @@ WorkerExecutor so the orchestrator can run tasks end-to-end.
 from __future__ import annotations
 
 import logging
-import os
 import time
 from typing import Optional
 
@@ -112,6 +111,7 @@ class WorkerLifecycle:
         rate_limiter: Optional[EgressRateLimiter] = None,
         state_manager: Optional[CapabilityStateManager] = None,
         worker_executor: Optional[object] = None,
+        seccomp_profile_content: Optional[str] = None,
     ):
         self._validator = manifest_validator
         self._blueprint_engine = blueprint_engine
@@ -121,6 +121,7 @@ class WorkerLifecycle:
         self._rate_limiter = rate_limiter or EgressRateLimiter()
         self._state_manager = state_manager
         self._worker_executor = worker_executor
+        self._seccomp_profile_content = seccomp_profile_content
         self._active_contexts: dict[str, WorkerContext] = {}
         self._context_start_times: dict[str, float] = {}
 
@@ -325,9 +326,8 @@ class WorkerLifecycle:
                     "read_only_rootfs": context.blueprint.security_config.read_only_rootfs,
                     "no_new_privileges": context.blueprint.security_config.no_new_privileges,
                     "seccomp_profile": (
-                        os.environ.get("DRNT_SECCOMP_PROFILE")
+                        self._seccomp_profile_content
                         if context.blueprint.security_config.seccomp_profile_path
-                        and context.blueprint.security_config.seccomp_profile_path != "default"
                         else None
                     ),
                     "network_mode": context.blueprint.network_config.network_mode,
