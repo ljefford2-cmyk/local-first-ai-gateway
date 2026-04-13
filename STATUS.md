@@ -12,7 +12,7 @@
 
 ---
 
-## Spec 1 — Audit Log Writer
+## Spec 1 — Audit/Event Schema
 
 ### Control Plane
 
@@ -38,7 +38,7 @@
 
 ---
 
-## Spec 2 — Orchestrator Core
+## Spec 2 — Capability Model (WAL → Permissions)
 
 ### Control Plane
 
@@ -63,7 +63,7 @@
 
 ---
 
-## Spec 3 — Context Packager
+## Spec 3 — Context Boundary Specification
 
 ### Control Plane
 
@@ -86,7 +86,7 @@
 
 ---
 
-## Spec 4 — Egress Policy
+## Spec 4 — Egress Policy Binding
 
 ### Control Plane
 
@@ -136,7 +136,7 @@
 
 ---
 
-## Spec 6 — Worker Silo / Runtime Enforcement
+## Spec 6 — Silo Runtime Security
 
 ### Control Plane
 
@@ -220,4 +220,4 @@
 
 ## Summary: What V1 Actually Is
 
-V1 control-plane and execution-plane implementation. All seven specifications are implemented with 763 tests (745 passing, 18 skipped e2e). The execution plane creates worker containers with seccomp enforcement and file-based I/O. Job state, idempotency store, circuit breaker state, and hub state are persisted to SQLite with write-through caching. ConnectivityMonitor gates cloud dispatch via circuit breaker. Remaining gaps: worker containers are created but not pooled, Docker socket is read-write (privileged sidecar planned for v0.2), secrets are plain .env bind-mount with no rotation, and seccomp is not applied at the Docker Compose level to infrastructure services.
+V1 control-plane and execution-plane implementation. All seven specifications are implemented with 763 tests (745 passing, 18 skipped e2e). The execution plane creates worker containers with seccomp enforcement and file-based I/O. Job state, idempotency store, circuit breaker state, and hub state are persisted to SQLite with write-through caching. ConnectivityMonitor gates cloud dispatch via circuit breaker. Remaining gaps: worker containers are created but not pooled, secrets are plain .env bind-mount with no rotation, and seccomp is not applied at the Docker Compose level to infrastructure services.

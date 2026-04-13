@@ -27,7 +27,7 @@ DRNT was designed around this principle, and the build process proved it empiric
 - **Automatic demotion on failure.** When unsupervised execution scattered files across wrong directories or introduced silent regressions, trust was pulled back to explicit verification at every step. Quality improved immediately.
 - **Audit trail as learning surface.** State snapshots, commit history, and test results create an empirical record. What was true at review time is what matters — not assertion after the fact.
 
-When these constraints were loose, output quality was poor. When they tightened, the same models — with no capability upgrade — produced clean, verified, zero-regression output across 735 tests and seven specification implementations.
+When these constraints were loose, output quality was poor. When they tightened, the same models — with no capability upgrade — produced clean, verified, zero-regression output across seven specification implementations (see [`STATUS.md`](STATUS.md) for current test counts).
 
 The implication extends beyond this project. The local model's value is not that it is smart. It is that it knows what it doesn't know, it enforces structural privacy before anything leaves the local perimeter (current implementation: regex-based PII redaction with sensitivity allowlists, single-field context packaging; multi-field context assembly and advanced NER are v0.2 scope items), and it never promotes its own trust level. Better outcomes come from better governance of capable models, not from making models more capable and hoping they self-govern.
 
@@ -35,13 +35,14 @@ The implication extends beyond this project. The local model's value is not that
 
 | Spec | Name |
 |------|------|
-| 1 | Audit Log Writer |
-| 2 | Orchestrator Core |
-| 3 | Context Packager |
-| 4 | Egress Policy |
+| 1 | Audit/Event Schema |
+| 2 | Capability Model (WAL → Permissions) |
+| 3 | Context Boundary Specification |
+| 4 | Egress Policy Binding |
 | 5 | Override Semantics |
-| 6 | Worker Silo / Runtime Enforcement |
+| 6 | Silo Runtime Security |
 | 7 | Signal Chain Resilience |
+| 8 | Managed Build Workflow |
 
 ## Services
 
@@ -94,7 +95,7 @@ The `.env` file is gitignored. Only the example file is tracked. The `secrets/` 
 pytest tests/
 ```
 
-735 tests across 34 files (717 passing, 18 skipped e2e integration). All unit tests run against in-process Python objects with mocked I/O. These tests provide mocked-path regression confidence. End-to-end tests against a running Docker Compose stack are a v0.2 deliverable. See [`STATUS.md`](STATUS.md) for the full test taxonomy breakdown.
+The implementation is covered by an automated test suite — see [`STATUS.md`](STATUS.md) for current counts and per-claim conformance. Unit tests run against in-process Python objects with mocked I/O. End-to-end tests against a running Docker Compose stack are a v0.2 deliverable.
 
 ## Development
 
