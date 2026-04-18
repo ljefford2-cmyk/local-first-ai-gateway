@@ -95,6 +95,13 @@ class WorkerExecutor:
         with open(result_file, "r") as f:
             return json.load(f)
 
+    def _try_read_result(self, sandbox_dir: Path) -> Optional[dict[str, Any]]:
+        """Best-effort read of result.json. Returns None if missing or unreadable."""
+        try:
+            return self._read_result(sandbox_dir)
+        except Exception:
+            return None
+
     def _cleanup_sandbox_dir(self, sandbox_dir: Path) -> None:
         shutil.rmtree(sandbox_dir, ignore_errors=True)
 
@@ -248,6 +255,10 @@ class WorkerExecutor:
             latency_ms = int(time.monotonic() * 1000) - start_ms
 
             if status == "timeout":
+                worker_result = self._try_read_result(sandbox_dir)
+                error_str = f"Container timed out after {wall_timeout}s"
+                if worker_result is not None:
+                    error_str += f", worker_result: {json.dumps(worker_result)}"
                 return WorkerResult(
                     success=False,
                     response_text="",
@@ -255,13 +266,17 @@ class WorkerExecutor:
                     token_count_out=0,
                     latency_ms=latency_ms,
                     model="",
-                    error=f"Container timed out after {wall_timeout}s",
+                    error=error_str,
                     exit_code=-1,
                     container_id=container_id,
                 )
 
             if status == "failed":
                 logs = sidecar_result.get("logs", "")
+                worker_result = self._try_read_result(sandbox_dir)
+                error_str = f"Container failed. exit_code={exit_code}, logs: {logs}"
+                if worker_result is not None:
+                    error_str += f", worker_result: {json.dumps(worker_result)}"
                 return WorkerResult(
                     success=False,
                     response_text="",
@@ -269,7 +284,7 @@ class WorkerExecutor:
                     token_count_out=0,
                     latency_ms=latency_ms,
                     model="",
-                    error=f"Container failed. exit_code={exit_code}, logs: {logs}",
+                    error=error_str,
                     exit_code=exit_code,
                     container_id=container_id,
                 )
