@@ -123,9 +123,10 @@ services:
     environment:
       - DRNT_SANDBOX_VOLUME=drnt-sandbox-workdir
       - DRNT_LOG_LEVEL=INFO
+      - DRNT_WORKER_PROXY_REGISTRY=/var/drnt/config/worker-proxy-registry.json
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./config:/config:ro
+      - ./config:/var/drnt/config:ro
       - sandbox-workdir:/var/drnt/workers
     networks:
       - drnt-internal

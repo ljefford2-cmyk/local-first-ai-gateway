@@ -1,0 +1,10 @@
+{
+    "approved_images": ["drnt-worker:latest"],
+    "allowed_networks": ["drnt-internal"],
+    "allowed_volume_names": ["drnt-sandbox-workdir"],
+    "caps": {
+        "mem_limit_max": "4g",
+        "pids_limit_max": 512,
+        "wall_timeout_max": 3600
+    }
+}

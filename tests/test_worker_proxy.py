@@ -33,17 +33,33 @@ def _load_wp(name: str):
     return mod
 
 
+_wp_registry = _load_wp("registry")
+
+# models.py does "from registry import ..." — point sys.modules["registry"]
+# at the worker-proxy version before importing models.
+_orig_registry = sys.modules.get("registry")
+sys.modules["registry"] = _wp_registry
 _wp_models = _load_wp("models")
+if _orig_registry is not None:
+    sys.modules["registry"] = _orig_registry
+else:
+    sys.modules.pop("registry", None)
 
 # main.py does "from models import ..." — temporarily point sys.modules
 # at the worker-proxy version so the import resolves correctly.
 _orig_models = sys.modules.get("models")
 sys.modules["models"] = _wp_models
+_orig_registry = sys.modules.get("registry")
+sys.modules["registry"] = _wp_registry
 _wp_main = _load_wp("main")
 if _orig_models is not None:
     sys.modules["models"] = _orig_models
 else:
     sys.modules.pop("models", None)
+if _orig_registry is not None:
+    sys.modules["registry"] = _orig_registry
+else:
+    sys.modules.pop("registry", None)
 
 ContainerRunRequest = _wp_models.ContainerRunRequest
 ContainerRunResponse = _wp_models.ContainerRunResponse
@@ -63,6 +79,30 @@ def _reset_client_singleton():
     _wp_main._host_sandbox_base = None
 
 
+@pytest.fixture(autouse=True)
+def _test_registry():
+    """Install a test registry before each test runs.
+
+    The Pydantic validators read from registry.get_active(); without an active
+    registry, every request would fail with RuntimeError. TestClient does not
+    invoke the lifespan hook (no `with` block), so we set the module's
+    active registry directly.
+    """
+    reg = _wp_registry.Registry(
+        approved_images=frozenset({"drnt-worker:latest"}),
+        allowed_networks=frozenset({"drnt-internal"}),
+        allowed_volume_names=frozenset({"drnt-sandbox-workdir"}),
+        caps=_wp_registry.RegistryCaps(
+            mem_limit_max="4g",
+            pids_limit_max=512,
+            wall_timeout_max=3600,
+        ),
+    )
+    _wp_registry.set_active(reg)
+    yield reg
+    _wp_registry._active = None
+
+
 @pytest.fixture()
 def mock_docker_client():
     client = MagicMock()
@@ -80,13 +120,17 @@ def test_client(mock_docker_client):
 
 
 def _make_run_request(**overrides) -> dict:
-    """Build a minimal valid ContainerRunRequest body."""
+    """Build a minimal valid ContainerRunRequest body.
+
+    All fields satisfy the registry allowlist and field validators. Overrides
+    let individual tests punch one field invalid to exercise a specific rule.
+    """
     base = dict(
         image="drnt-worker:latest",
         name="drnt-worker-test-abc123",
         labels={"drnt.role": "worker", "drnt.job_id": "j1"},
         environment={"OLLAMA_URL": "http://ollama:11434"},
-        volumes={"/host/inbox": {"bind": "/inbox", "mode": "ro"}},
+        volumes={"/var/drnt/workers/j1/inbox": {"bind": "/inbox", "mode": "ro"}},
         security_opt=["no-new-privileges"],
         mem_limit="256m",
         pids_limit=64,
@@ -262,42 +306,80 @@ class TestContainerRun:
 # Container config translation
 # ---------------------------------------------------------------------------
 
-class TestConfigTranslation:
-    def test_full_config_forwarded(self, test_client, mock_docker_client):
-        """All request fields are forwarded to containers.create()."""
+class TestRequestValidation:
+    """Default-deny allowlist enforcement on ContainerRunRequest.
+
+    Replaces the previous pass-through translation tests (retired in the
+    Phase 2B v0.2 hardening): the proxy no longer forwards any submitted
+    configuration — it rejects requests that deviate from the locked-down
+    blueprint shape.
+    """
+
+    def test_legitimate_blueprint_shape_accepted(self, test_client, mock_docker_client):
         ctr = _fake_container(exit_code=0)
         mock_docker_client.containers.create.return_value = ctr
 
-        req_body = _make_run_request()
-        test_client.post("/containers/run", json=req_body)
+        resp = test_client.post("/containers/run", json=_make_run_request())
+        assert resp.status_code == 200
 
-        kwargs = mock_docker_client.containers.create.call_args[1]
-        assert kwargs["image"] == req_body["image"]
-        assert kwargs["name"] == req_body["name"]
-        assert kwargs["labels"] == req_body["labels"]
-        assert kwargs["environment"] == req_body["environment"]
-        assert kwargs["volumes"] == req_body["volumes"]
-        assert kwargs["security_opt"] == req_body["security_opt"]
-        assert kwargs["mem_limit"] == req_body["mem_limit"]
-        assert kwargs["pids_limit"] == req_body["pids_limit"]
-        assert kwargs["cap_drop"] == req_body["cap_drop"]
-        assert kwargs["read_only"] is True
-        assert kwargs["tmpfs"] == req_body["tmpfs"]
-        assert kwargs["detach"] is True
+    def test_cap_drop_empty_rejected(self, test_client, mock_docker_client):
+        resp = test_client.post("/containers/run", json=_make_run_request(cap_drop=[]))
+        assert resp.status_code == 422
+        assert "cap_drop" in resp.text
 
-    def test_defaults_applied(self, test_client, mock_docker_client):
-        """Minimal request uses sane defaults."""
-        ctr = _fake_container(exit_code=0)
-        mock_docker_client.containers.create.return_value = ctr
+    def test_read_only_false_rejected(self, test_client, mock_docker_client):
+        resp = test_client.post("/containers/run", json=_make_run_request(read_only=False))
+        assert resp.status_code == 422
+        assert "read_only" in resp.text
 
-        minimal = {"image": "worker:latest", "name": "test-worker"}
-        test_client.post("/containers/run", json=minimal)
+    def test_security_opt_missing_no_new_privileges_rejected(
+        self, test_client, mock_docker_client
+    ):
+        resp = test_client.post(
+            "/containers/run",
+            json=_make_run_request(security_opt=["seccomp=/tmp/x.json"]),
+        )
+        assert resp.status_code == 422
+        assert "no-new-privileges" in resp.text
 
-        kwargs = mock_docker_client.containers.create.call_args[1]
-        assert kwargs["mem_limit"] == "256m"
-        assert kwargs["pids_limit"] == 64
-        assert kwargs["cap_drop"] == ["ALL"]
-        assert kwargs["read_only"] is True
+    def test_network_mode_host_rejected(self, test_client, mock_docker_client):
+        resp = test_client.post(
+            "/containers/run", json=_make_run_request(network_mode="host"),
+        )
+        assert resp.status_code == 422
+        assert "network_mode" in resp.text
+
+    def test_volume_outside_sandbox_rejected(self, test_client, mock_docker_client):
+        resp = test_client.post(
+            "/containers/run",
+            json=_make_run_request(volumes={
+                "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
+            }),
+        )
+        assert resp.status_code == 422
+        assert "/var/run/docker.sock" in resp.text
+
+    def test_image_not_in_registry_rejected(self, test_client, mock_docker_client):
+        resp = test_client.post(
+            "/containers/run", json=_make_run_request(image="alpine:latest"),
+        )
+        assert resp.status_code == 422
+        assert "approved_images" in resp.text
+
+    def test_mem_limit_above_cap_rejected(self, test_client, mock_docker_client):
+        resp = test_client.post(
+            "/containers/run", json=_make_run_request(mem_limit="16g"),
+        )
+        assert resp.status_code == 422
+        assert "mem_limit" in resp.text
+
+    def test_label_missing_worker_marker_rejected(self, test_client, mock_docker_client):
+        resp = test_client.post(
+            "/containers/run",
+            json=_make_run_request(labels={"drnt.job_id": "j1"}),
+        )
+        assert resp.status_code == 422
+        assert "drnt.role" in resp.text
 
 
 # ---------------------------------------------------------------------------

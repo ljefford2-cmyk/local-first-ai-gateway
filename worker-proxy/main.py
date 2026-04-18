@@ -18,6 +18,7 @@ import docker.errors
 import requests.exceptions
 from fastapi import FastAPI, HTTPException
 
+import registry as registry_module
 from models import ContainerRunRequest, ContainerRunResponse
 
 logging.basicConfig(
@@ -151,6 +152,10 @@ async def _gc_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _gc_task
+    # Load the default-deny registry before accepting any requests. A missing
+    # or malformed registry is a hard startup failure — the proxy must not
+    # accept traffic without a known allowlist.
+    registry_module.set_active(registry_module.load_registry())
     resolve_host_sandbox_base()
     _gc_task = asyncio.create_task(_gc_loop())
     logger.info("Worker proxy ready")
