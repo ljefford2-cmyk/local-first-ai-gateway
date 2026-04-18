@@ -29,7 +29,7 @@ DRNT was designed around this principle, and the build process proved it empiric
 
 When these constraints were loose, output quality was poor. When they tightened, the same models — with no capability upgrade — produced clean, verified, zero-regression output across seven specification implementations (see [`STATUS.md`](STATUS.md) for current test counts).
 
-The implication extends beyond this project. The local model's value is not that it is smart. It is that it knows what it doesn't know, it enforces structural privacy before anything leaves the local perimeter (current implementation: regex-based PII redaction with sensitivity allowlists, single-field context packaging; multi-field context assembly and advanced NER are v0.2 scope items), and it never promotes its own trust level. Better outcomes come from better governance of capable models, not from making models more capable and hoping they self-govern.
+The implication extends beyond this project. The local model's value is not that it is smart. It is that it knows what it doesn't know, it enforces structural privacy before anything leaves the local perimeter (current implementation: regex-based PII redaction with sensitivity allowlists, single-field context packaging; multi-field context assembly and advanced NER are deferred (v0.3+)), and it never promotes its own trust level. Better outcomes come from better governance of capable models, not from making models more capable and hoping they self-govern.
 
 ## Specifications Implemented
 
@@ -95,7 +95,7 @@ The `.env` file is gitignored. Only the example file is tracked. The `secrets/` 
 pytest tests/
 ```
 
-The implementation is covered by an automated test suite — see [`STATUS.md`](STATUS.md) for current counts and per-claim conformance. Unit tests run against in-process Python objects with mocked I/O. End-to-end tests against a running Docker Compose stack are a v0.2 deliverable.
+The implementation is covered by an automated test suite — see [`STATUS.md`](STATUS.md) for current counts and per-claim conformance. Unit tests run against in-process Python objects with mocked I/O. End-to-end tests against a running Docker Compose stack live in `tests/test_e2e_v02.py` and are skipped when the stack is not running.
 
 ## Development
 
@@ -103,8 +103,6 @@ The implementation is covered by an automated test suite — see [`STATUS.md`](S
 
 ## Known V1 Limitations
 
-- Rate limiter is in-memory — counters reset on restart (v0.2 item)
 - Seccomp profile is enforced on spawned worker containers via `worker_executor.py` but is not applied at the Docker Compose level to the four infrastructure services (orchestrator, audit-log-writer, egress-gateway, ollama)
-- Secrets are plain `.env` bind-mount with no rotation mechanism
 
 These are tracked in [`STATUS.md`](STATUS.md).

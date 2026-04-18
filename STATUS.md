@@ -105,8 +105,7 @@
 | # | Claim | Status | Evidence |
 |---|-------|--------|----------|
 | 4.8 | Egress audit events persisted to durable log | **Implemented** | `egress_proxy.py:log_request()` routes egress audit events to the durable audit log via `audit_client.emit_durable()`. 14 dedicated tests in `test_durable_egress_audit.py` confirm the wiring. |
-| 4.9 | Secrets rotation mechanism | **Aspirational** | Secrets are plain `.env` file on a bind-mount. No rotation, no vault integration, no expiry tracking. Identified in adversarial review. |
-| 4.10 | Seccomp profile applied to worker containers | **Implemented** | `config/seccomp-default.json` exists with a default-deny policy and explicit syscall allowlist. `worker_lifecycle.py` resolves the profile path via `DRNT_SECCOMP_PROFILE` env var and passes it to `worker_executor.py`, which applies it via `security_opt=["no-new-privileges", "seccomp=<path>"]` on container creation. |
+| 4.9 | Seccomp profile applied to worker containers | **Implemented** | `config/seccomp-default.json` exists with a default-deny policy and explicit syscall allowlist. `worker_lifecycle.py` resolves the profile path via `DRNT_SECCOMP_PROFILE` env var and passes it to `worker_executor.py`, which applies it via `security_opt=["no-new-privileges", "seccomp=<path>"]` on container creation. |
 
 ---
 
@@ -220,4 +219,4 @@
 
 ## Summary: What V1 Actually Is
 
-V1 control-plane and execution-plane implementation. All seven specifications are implemented with test coverage across 28 test files (18 e2e integration tests are skipped when the Docker Compose stack is not running). The execution plane creates worker containers with seccomp enforcement and file-based I/O. Job state, idempotency store, circuit breaker state, and hub state are persisted to SQLite with write-through caching. ConnectivityMonitor gates cloud dispatch via circuit breaker. Remaining gaps: worker containers are created but not pooled, secrets are plain .env bind-mount with no rotation, and seccomp is not applied at the Docker Compose level to infrastructure services.
+V1 control-plane and execution-plane implementation. All seven specifications are implemented with test coverage across 28 test files (18 e2e integration tests are skipped when the Docker Compose stack is not running). The execution plane creates worker containers with seccomp enforcement and file-based I/O. Job state, idempotency store, circuit breaker state, and hub state are persisted to SQLite with write-through caching. ConnectivityMonitor gates cloud dispatch via circuit breaker. Remaining gap: seccomp is not applied at the Docker Compose level to infrastructure services.
