@@ -105,7 +105,7 @@
 | # | Claim | Status | Evidence |
 |---|-------|--------|----------|
 | 4.8 | Egress audit events persisted to durable log | **Implemented** | `egress_proxy.py:log_request()` routes egress audit events to the durable audit log via `audit_client.emit_durable()`. 14 dedicated tests in `test_durable_egress_audit.py` confirm the wiring. |
-| 4.9 | Seccomp profile applied to worker containers | **Partial — known issue** | `config/seccomp-default.json` exists with a default-deny policy and explicit syscall allowlist. `worker_lifecycle.py` reads the profile *content* (not path) via `DRNT_SECCOMP_PROFILE` and passes the JSON string into the worker-proxy request body, which forwards it to Docker as `security_opt=["seccomp=<content>"]`. Docker expects a path, not the body — net effect: the seccomp filter is not applied to worker containers in v0.2. See "Known Issues" section below. |
+| 4.9 | Seccomp profile applied to worker containers | **Implemented** | `config/seccomp-default.json` exists and is passed into worker execution. Runtime enforcement is verified by `tests/test_e2e_v02.py::TestWorkerExecution::test_worker_seccomp_enforcement_blocks_disallowed_syscall`: the fixed-contract probe confirms `personality(0xFFFFFFFF)` is blocked with `errno=EPERM` inside a worker container while control syscall `getpid()` succeeds. Earlier contradictory diagnosis was resolved by failed-path result retention in commit `1073535` and probe infrastructure in commit `13a7abb`. Verification is scoped to the blocked-syscall assertion; full profile exhaustiveness is not claimed. See KI-1 for historical context. |
 
 ---
 
@@ -156,7 +156,7 @@
 | 6.8 | Worker containers actually created and destroyed | **Implemented** | `orchestrator/worker_executor.py` creates one-shot Docker containers from `SandboxBlueprint`. Container is created, started, waited on, result collected, then force-removed. Tested in `test_worker_executor.py`. |
 | 6.9 | Worker agent executes tasks inside container | **Implemented** | `worker/worker_agent.py` runs inside the container, reads `/inbox/task.json`, calls Ollama, writes `/outbox/result.json`. Supports `text_generation` task type. 29 tests in `test_worker_executor.py`. |
 | 6.10 | Worker lifecycle wired into job dispatch | **Implemented** | `job_manager.py` routes `route.local` tasks through `execute_in_worker()` when `WorkerExecutor` is available. Falls back to direct Ollama call otherwise. `worker.execution_started` and `worker.execution_completed` audit events emitted. |
-| 6.11 | Container resource limits enforced | **Implemented** | `mem_limit`, `pids_limit`, and `tmpfs` are now wired from blueprint → executor request body → worker-proxy → Docker (commit `72fb249`, Phase 2B). Worker-proxy enforces caps from `config/worker-proxy-registry.json` before the Docker socket is touched (commit `578adde`). Seccomp passing has a known bug — see row 4.9 and "Known Issues". |
+| 6.11 | Container resource limits enforced | **Implemented** | `mem_limit`, `pids_limit`, and `tmpfs` are now wired from blueprint → executor request body → worker-proxy → Docker (commit `72fb249`, Phase 2B). Worker-proxy enforces caps from `config/worker-proxy-registry.json` before the Docker socket is touched (commit `578adde`). Seccomp runtime enforcement is now verified separately — see row 4.9 and KI-1. |
 | 6.12 | Network isolation enforced per-worker | **Implemented** | Blueprint-driven network isolation: workers with empty `egress_allow` get `network_mode="none"` (no network); workers with egress endpoints connect to `drnt-egress-proxy`. Default is no-network (fail closed). `EgressProxy` enforces allowlists at code level. Worker-proxy validator rejects `network_mode` values other than `"none"` or unset, and rejects networks not in `allowed_networks` (Phase 2B). |
 | 6.13 | Worker-proxy field-level default-deny on HTTP boundary | **Implemented** | `worker-proxy/models.py` — Pydantic `ConfigDict(extra="forbid")` plus field validators reject `cap_add`, `cpu_period`, `cpu_quota`, `storage_opt`, `mounts`, `command`, `working_dir`, `network_mode != "none"`, `read_only != True`, missing `no-new-privileges`, missing `cap_drop: ["ALL"]`, and missing `drnt.role: worker` label. Permissive payloads fail with HTTP 422 before the Docker socket. (Phase 2B, commit `578adde`.) |
 | 6.14 | Worker-proxy image and resource registry | **Implemented** | `config/worker-proxy-registry.json` declares `approved_images`, `allowed_networks`, `allowed_volume_names`, and `caps` (`mem_limit_max`, `pids_limit_max`, `wall_timeout_max`). Default-deny: worker-proxy refuses to start if the registry file is missing or malformed. `worker-proxy/registry.py` — `load_registry()`, `set_active()`, `get_active()`. (Phase 2B, commit `578adde`.) |
@@ -221,7 +221,9 @@
 
 ## Known Issues
 
-### KI-1 — Seccomp profile not applied to worker containers (Spec 6 row 4.9, 6.11)
+### KI-1 — Seccomp profile not applied to worker containers [RESOLVED 2026-04-18] (Spec 6 row 4.9, 6.11)
+
+**Resolution (2026-04-18):** Runtime seccomp enforcement is now verified by the fixed-contract e2e probe added in commit `13a7abb`, with failed-path observability improved by commit `1073535`. The probe asserts that `personality(0xFFFFFFFF)` is blocked with `errno=EPERM` inside a worker container while control syscall `getpid()` succeeds. This resolves the specific runtime-enforcement contradiction previously tracked here. The historical analysis below is retained as audit trail.
 
 **Symptom:** The seccomp default-deny profile in `config/seccomp-default.json` is not applied to worker containers at runtime.
 
@@ -231,10 +233,10 @@
 
 **Fix path (out of scope for v0.2):** The orchestrator must pass the seccomp file's *path* to the worker-proxy, and the worker-proxy must mount `config/seccomp-default.json` at a known container-internal path so Docker can resolve it. Worker-proxy already mounts `./config:/var/drnt/config:ro` (commit `578adde`), so the host-side mount exists; the orchestrator-side argument and host-path translation across the orchestrator → worker-proxy → Docker boundary are the remaining work.
 
-**Tracked:** This entry. To be addressed in a v0.2.x patch or v0.3 hardening pass.
+**Tracked:** Resolved on 2026-04-18 by commits `1073535` and `13a7abb`. Historical entry retained for audit trail.
 
 ---
 
 ## Summary: What V1 Actually Is
 
-V1 control-plane and execution-plane implementation. All seven specifications are implemented with test coverage across 38 test files (latest run: 772 collected, 740 passed, 27 skipped, 5 e2e-only failures when the Docker Compose stack is not running). The execution plane creates worker containers with file-based I/O through a Docker-socket-isolated `worker-proxy` sidecar that enforces a field-level default-deny allowlist plus an image/network/volume/resource registry on its HTTP boundary (Phase 2B). Job state, idempotency store, circuit breaker state, and hub state are persisted to SQLite with write-through caching. ConnectivityMonitor gates cloud dispatch via circuit breaker. Known regression: seccomp filter is not applied to worker containers — see KI-1 above.
+V1 control-plane and execution-plane implementation. All seven specifications are implemented with test coverage across 38 test files (latest run: 772 collected, 740 passed, 27 skipped, 5 e2e-only failures when the Docker Compose stack is not running). The execution plane creates worker containers with file-based I/O through a Docker-socket-isolated `worker-proxy` sidecar that enforces a field-level default-deny allowlist plus an image/network/volume/resource registry on its HTTP boundary (Phase 2B). Job state, idempotency store, circuit breaker state, and hub state are persisted to SQLite with write-through caching. ConnectivityMonitor gates cloud dispatch via circuit breaker. Runtime seccomp enforcement is now verified for the worker path via the fixed-contract probe described in row 4.9 and KI-1.
