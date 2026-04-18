@@ -309,18 +309,28 @@ class WorkerLifecycle:
                 },
             }
 
+            # WorkerExecutor._execute_sync reads mem_limit, pids_limit, tmpfs,
+            # seccomp_profile, and network_mode from security_config. Keys and
+            # locations must match those reads exactly — previously mem_limit
+            # was placed in resource_config under the wrong key "memory_limit"
+            # and tmpfs was never set, so blueprint values silently defaulted
+            # in the HTTP surface.
+            #
+            # Deferred blueprint fields (not consumed by the HTTP surface in
+            # Phase 2): cap_add, cpu_period, cpu_quota, storage_opt, mounts,
+            # command, working_dir. See Phase 2B Step 1 trace.
+            tmpfs_mounts: dict[str, str] = {}
+            for entry in context.blueprint.security_config.tmpfs_mounts:
+                mount, _, opts = entry.partition(":")
+                tmpfs_mounts[mount] = opts
+
             result = await self._worker_executor.execute(
                 worker_id=context.worker_id,
                 job_id=context.job_id,
                 capability_id=capability_id,
                 image=context.blueprint.container_config.image,
                 task_payload=task_payload,
-                resource_config={
-                    "memory_limit": context.blueprint.resource_config.memory_limit,
-                    "cpu_period": context.blueprint.resource_config.cpu_period,
-                    "cpu_quota": context.blueprint.resource_config.cpu_quota,
-                    "pids_limit": context.blueprint.resource_config.pids_limit,
-                },
+                resource_config={},
                 security_config={
                     "cap_drop": context.blueprint.security_config.cap_drop,
                     "read_only_rootfs": context.blueprint.security_config.read_only_rootfs,
@@ -331,6 +341,9 @@ class WorkerLifecycle:
                         else None
                     ),
                     "network_mode": context.blueprint.network_config.network_mode,
+                    "mem_limit": context.blueprint.resource_config.memory_limit,
+                    "pids_limit": context.blueprint.resource_config.pids_limit,
+                    "tmpfs": tmpfs_mounts,
                 },
                 wall_timeout=context.manifest.resources.max_wall_seconds,
             )

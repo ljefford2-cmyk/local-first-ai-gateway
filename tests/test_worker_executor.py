@@ -907,6 +907,25 @@ class TestLifecycleSeccompNetworkPlumbing:
         sc = executor.last_kwargs["security_config"]
         assert sc["network_mode"] == "drnt-internal"
 
+    @pytest.mark.asyncio
+    async def test_blueprint_resource_values_reach_executor(self, tmp_path):
+        """mem_limit, pids_limit, tmpfs from the blueprint reach the executor's
+        security_config under the keys WorkerExecutor._execute_sync actually
+        reads. Guards against the Step 1 key-mismatch regression."""
+        lifecycle, audit, executor = _make_lifecycle_with_executor(tmp_path)
+        job = _make_job()
+        ctx = await lifecycle.prepare_worker(job)
+        audit.clear()
+
+        await lifecycle.execute_in_worker(ctx, prompt="hello")
+
+        sc = executor.last_kwargs["security_config"]
+        rc = executor.last_kwargs["resource_config"]
+        assert sc["mem_limit"] == ctx.blueprint.resource_config.memory_limit
+        assert sc["pids_limit"] == ctx.blueprint.resource_config.pids_limit
+        assert sc["tmpfs"] == {"/tmp": "size=64m,noexec,nosuid"}
+        assert "memory_limit" not in rc
+
 
 # ---------------------------------------------------------------------------
 # 9. TestSidecarFailureModes (3 tests)
