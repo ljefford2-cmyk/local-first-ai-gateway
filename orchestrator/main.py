@@ -268,6 +268,7 @@ async def lifespan(app: FastAPI):
         worker_executor=_worker_executor,
         seccomp_profile_content=hub_config.seccomp_profile_content,
     )
+    admin_routes.set_worker_lifecycle(_worker_lifecycle)
     logger.info(
         "Worker lifecycle initialized (executor=%s)",
         "active" if _worker_executor is not None else "none — direct dispatch fallback",

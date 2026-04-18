@@ -262,6 +262,89 @@ class TestWorkerExecution:
         await wait_for_job(job_id, timeout=TIMEOUT)
 
     @pytest.mark.asyncio
+    async def test_worker_seccomp_enforcement_blocks_disallowed_syscall(self):
+        """Prove seccomp blocks `personality(0xFFFFFFFF)` inside a worker.
+
+        Uses the fixed-contract admin probe endpoint (POST
+        /admin/e2e/syscall-probe) so the worker task itself carries the
+        probe — no race against GC, no exec into a live container.
+        The probe is hardcoded on the worker side: target=personality,
+        control=getpid; the endpoint takes no parameters.
+        """
+        await ensure_hub_active()
+
+        import re as _re
+
+        r = await api_post("/admin/e2e/syscall-probe")
+        assert r.status_code == 200, (
+            f"probe endpoint failed: status={r.status_code} body={r.text}"
+        )
+        body = r.json()
+        result_line = body.get("result_line", "")
+        container_id = body.get("container_id")
+
+        match = _re.search(
+            r"SECCOMP_TEST_RESULT:\s+target_ret=(-?\d+)\s+target_errno=(-?\d+)"
+            r"\s+control_ret=(-?\d+)\s+control_errno=(-?\d+)",
+            result_line,
+        )
+
+        def _diagnostics(reason: str) -> str:
+            parts = [
+                f"{reason}",
+                f"full_result_line: {result_line!r}",
+                f"container_id: {container_id!r}",
+                f"response_body: {body!r}",
+            ]
+            if container_id:
+                try:
+                    inspect = subprocess.run(
+                        ["docker", "inspect", container_id, "--format",
+                         "{{json .HostConfig.SecurityOpt}}"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    out = inspect.stdout.strip()
+                    err = inspect.stderr.strip()
+                    if out:
+                        parts.append(
+                            f"SecurityOpt[first200]: {out[:200]!r} "
+                            f"SecurityOpt[last200]: {out[-200:]!r}"
+                        )
+                    if err:
+                        parts.append(f"inspect_stderr: {err!r}")
+                    if inspect.returncode != 0:
+                        parts.append("inspect_unavailable (container likely removed after teardown)")
+                except Exception as exc:
+                    parts.append(f"inspect_error: {exc!r}")
+            return " | ".join(parts)
+
+        assert match, _diagnostics(
+            "did not find SECCOMP_TEST_RESULT line in probe response"
+        )
+
+        target_ret = int(match.group(1))
+        target_errno = int(match.group(2))
+        control_ret = int(match.group(3))
+        control_errno = int(match.group(4))
+
+        assert control_ret > 0, _diagnostics(
+            f"control getpid() did not return a valid pid (got {control_ret}, "
+            f"errno={control_errno}) — worker or container setup is broken"
+        )
+
+        assert target_ret == -1, _diagnostics(
+            f"target personality(0xFFFFFFFF) was NOT blocked: "
+            f"returned {target_ret} (expected -1). Seccomp profile is not "
+            f"enforcing the allowlist."
+        )
+
+        assert target_errno == 1, _diagnostics(
+            f"target personality(0xFFFFFFFF) returned -1 but errno={target_errno} "
+            f"(expected 1/EPERM). EPERM is the profile's defaultErrnoRet; a "
+            f"different errno means something else blocked it."
+        )
+
+    @pytest.mark.asyncio
     async def test_worker_network_isolation(self):
         """Verify sandboxed execution via worker.prepared audit events."""
         await ensure_hub_active()

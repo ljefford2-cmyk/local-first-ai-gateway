@@ -9,6 +9,7 @@ Supported task types:
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import sys
@@ -80,8 +81,54 @@ def handle_text_generation(task: dict) -> dict:
     }
 
 
+def handle_syscall_probe(task: dict) -> dict:
+    """TEST-ONLY seccomp enforcement probe.
+
+    Hardcoded: target=personality(0xFFFFFFFF), control=getpid(). No field
+    of the task body changes behavior — the probe contract is fixed.
+    """
+    print("PROBE: entered handle_syscall_probe", flush=True)
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+
+        ctypes.set_errno(0)
+        target_ret = libc.personality(ctypes.c_ulong(0xFFFFFFFF))
+        target_errno = ctypes.get_errno()
+
+        ctypes.set_errno(0)
+        control_ret = libc.getpid()
+        control_errno = ctypes.get_errno()
+
+        result_line = (
+            f"SECCOMP_TEST_RESULT: target_ret={target_ret} "
+            f"target_errno={target_errno} control_ret={control_ret} "
+            f"control_errno={control_errno}"
+        )
+
+        return {
+            "task_id": task.get("task_id"),
+            "status": "success",
+            "result": result_line,
+            "token_count_in": 0,
+            "token_count_out": 0,
+            "model": "syscall-probe",
+        }
+    except Exception as exc:
+        error_line = f"SECCOMP_TEST_ERROR: {type(exc).__name__}: {exc}"
+        return {
+            "task_id": task.get("task_id"),
+            "status": "error",
+            "result": error_line,
+            "error": error_line,
+            "token_count_in": 0,
+            "token_count_out": 0,
+            "model": "syscall-probe",
+        }
+
+
 TASK_HANDLERS = {
     "text_generation": handle_text_generation,
+    "syscall_probe": handle_syscall_probe,
 }
 
 

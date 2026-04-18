@@ -28,6 +28,7 @@ _audit_client = None
 _promotion_monitor = None
 _startup_report = None
 _audit_log_dir = "/var/drnt/audit"
+_worker_lifecycle = None
 
 
 def init(registry, state_manager, demotion_engine, audit_client, promotion_monitor,
@@ -44,6 +45,12 @@ def init(registry, state_manager, demotion_engine, audit_client, promotion_monit
         _startup_report = startup_report
     if audit_log_dir is not None:
         _audit_log_dir = audit_log_dir
+
+
+def set_worker_lifecycle(worker_lifecycle) -> None:
+    """TEST-ONLY wiring: attach the worker lifecycle for the syscall probe endpoint."""
+    global _worker_lifecycle
+    _worker_lifecycle = worker_lifecycle
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +98,13 @@ class SimulateOverrideResponse(BaseModel):
 
 class CapabilityStatusResponse(BaseModel):
     capabilities: list[dict]
+
+
+class SyscallProbeResponse(BaseModel):
+    """Result of the fixed seccomp enforcement probe (TEST-ONLY)."""
+    status: str
+    result_line: str
+    container_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -379,3 +393,63 @@ async def get_audit_events(
         except OSError:
             continue
     return {"events": events[-limit:], "total": len(events)}
+
+
+# ---------------------------------------------------------------------------
+# POST /admin/e2e/syscall-probe  (TEST-ONLY — seccomp enforcement)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/e2e/syscall-probe", response_model=SyscallProbeResponse)
+async def e2e_syscall_probe():
+    """TEST-ONLY. Run the fixed seccomp enforcement probe in a worker.
+
+    The probe is fully hardcoded in the worker handler:
+      target  = personality(0xFFFFFFFF)
+      control = getpid()
+    This endpoint accepts no body and exposes no parameters — no task_type
+    override, no image override, no command, no security settings. It
+    dispatches through the normal WorkerLifecycle path (manifest validation,
+    blueprint, proxy registry enforcement) using capability route.local.
+    """
+    err = _guard()
+    if err:
+        return err
+
+    if _worker_lifecycle is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "not_ready", "detail": "worker_lifecycle unavailable"},
+        )
+
+    probe_cap_id = "route.local"
+    if _registry.get(probe_cap_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"probe capability {probe_cap_id} missing from registry",
+        )
+
+    import uuid_utils
+    from models import Job
+
+    probe_job = Job(
+        job_id=str(uuid_utils.uuid7()),
+        raw_input="__e2e_syscall_probe__",
+        input_modality="text",
+        device="watch",
+        governing_capability_id=probe_cap_id,
+    )
+
+    ctx = await _worker_lifecycle.prepare_worker(probe_job)
+    try:
+        result = await _worker_lifecycle.execute_in_worker(
+            ctx, prompt="", model="", task_type="syscall_probe",
+        )
+    finally:
+        await _worker_lifecycle.teardown_worker(ctx)
+
+    return SyscallProbeResponse(
+        status="ok",
+        result_line=result.get("response_text", ""),
+        container_id=result.get("container_id"),
+    )
