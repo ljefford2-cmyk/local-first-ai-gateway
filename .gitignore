@@ -35,3 +35,6 @@ Thumbs.db
 # Build reports (live in Claude project, not repo)
 *.docx
 *_dump.txt
+
+# Scratch / discovery artifacts
+.tmp/
