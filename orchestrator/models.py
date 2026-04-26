@@ -39,6 +39,14 @@ class JobStatus(str, Enum):
     closed_no_action = "closed_no_action"
 
 
+class ReviewDecision(str, Enum):
+    approve = "approve"
+    edit = "edit"
+    reject = "reject"
+    defer = "defer"
+    decline_to_act = "decline_to_act"
+
+
 # ---------- HTTP request / response ----------
 
 class Proposal(BaseModel):
@@ -73,10 +81,11 @@ class JobSubmitResponse(BaseModel):
 class ReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    decision: str
+    decision: ReviewDecision
     result_id: str
     response_hash: str
     decision_idempotency_key: str
+    modified_result: Optional[str] = None
 
 
 class JobStatusResponse(BaseModel):

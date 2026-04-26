@@ -1,15 +1,19 @@
 """Phase 4A backend contract — schema-only tests.
 
-Covers the Phase 4A.1 schema and enum changes:
+Covers the Phase 4A.1 schema and enum changes plus the Phase 4A.2 schema
+amendment:
 - JobStatus.proposal_ready and JobStatus.closed_no_action members
 - Proposal response model
 - JobSubmitRequest extension with client_source, client_source_event_id,
   client_timestamp; extra="forbid"
-- ReviewRequest model with extra="forbid"
+- ReviewRequest model with extra="forbid", ReviewDecision enum, and
+  modified_result optional field
 - JobStatusResponse.proposal optional field
 
 Endpoint wiring, job_manager behavior, and persistence are out of scope
-for Phase 4A.1 and are not exercised here.
+for Phase 4A.1 / 4A.2 and are not exercised here. In particular, the
+handler-side rule that "modified_result is required iff decision == edit"
+is deferred to the endpoint-wiring session and is not asserted here.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from models import (
     JobStatusResponse,
     JobSubmitRequest,
     Proposal,
+    ReviewDecision,
     ReviewRequest,
 )
 
@@ -146,6 +151,13 @@ def test_jobsubmitrequest_rejects_invalid_client_source():
         JobSubmitRequest(**payload)
 
 
+# ---------- ReviewDecision enum ----------
+
+def test_reviewdecision_has_exactly_five_settled_values():
+    expected = {"approve", "edit", "reject", "defer", "decline_to_act"}
+    assert {m.value for m in ReviewDecision} == expected
+
+
 # ---------- ReviewRequest model ----------
 
 def _valid_review_payload() -> dict:
@@ -159,10 +171,28 @@ def _valid_review_payload() -> dict:
 
 def test_reviewrequest_accepts_valid_payload():
     r = ReviewRequest(**_valid_review_payload())
-    assert r.decision == "approve"
+    assert r.decision == ReviewDecision.approve
     assert r.result_id == "res-001"
     assert r.response_hash == "sha256:abc"
     assert r.decision_idempotency_key == "rev-key-001"
+
+
+@pytest.mark.parametrize(
+    "decision_value",
+    ["approve", "edit", "reject", "defer", "decline_to_act"],
+)
+def test_reviewrequest_accepts_each_valid_decision(decision_value: str):
+    payload = _valid_review_payload()
+    payload["decision"] = decision_value
+    r = ReviewRequest(**payload)
+    assert r.decision == ReviewDecision(decision_value)
+
+
+def test_reviewrequest_rejects_invalid_decision_value():
+    payload = _valid_review_payload()
+    payload["decision"] = "abstain"
+    with pytest.raises(ValidationError):
+        ReviewRequest(**payload)
 
 
 @pytest.mark.parametrize(
@@ -181,6 +211,34 @@ def test_reviewrequest_rejects_unknown_field():
     payload["bogus_field"] = "value"
     with pytest.raises(ValidationError):
         ReviewRequest(**payload)
+
+
+def test_reviewrequest_accepts_modified_result_string():
+    payload = _valid_review_payload()
+    payload["decision"] = "edit"
+    payload["modified_result"] = "edited content"
+    r = ReviewRequest(**payload)
+    assert r.modified_result == "edited content"
+
+
+def test_reviewrequest_preserves_modified_result():
+    payload = _valid_review_payload()
+    payload["decision"] = "edit"
+    payload["modified_result"] = "the human edited result"
+    r = ReviewRequest(**payload)
+    assert r.modified_result == "the human edited result"
+
+
+def test_reviewrequest_accepts_omitted_modified_result():
+    r = ReviewRequest(**_valid_review_payload())
+    assert r.modified_result is None
+
+
+def test_reviewrequest_accepts_explicit_none_modified_result():
+    payload = _valid_review_payload()
+    payload["modified_result"] = None
+    r = ReviewRequest(**payload)
+    assert r.modified_result is None
 
 
 # ---------- JobStatusResponse.proposal field ----------
