@@ -391,3 +391,133 @@ This amendment closes all three gaps before any proposal-population code is writ
 - No `job_manager` proposal-population, proposal-event-emission, or review-handling behavior.
 - No persistence, audit-event implementation, `STATUS.md`, or `docs/SPEC-MAP.md` changes.
 - No tests are run or added by this amendment.
+
+### 2026-04-26 — Define review handler conflict and serialization semantics
+
+**Authorized by:** Lawrence Jeffords on 2026-04-26 per `docs/plans/phase-4a-backend-contract.md` commit `eff74ee` and the Phase 4A.2 review-concurrency discovery report.
+
+**Issue resolved (Phase 4A.2.c):**
+
+The Phase 4A.2.b amendment "Define proposal-ready audit event and triggers" landed `job.proposal_ready` lifecycle events, hold-reason vocabulary, and proposal-derivation location. Six review-handler ambiguities remain and must be locked before `POST /jobs/{job_id}/review` is implemented:
+
+1. The plan does not define HTTP behavior when a review request targets a job that is not in `proposal_ready`. Without an explicit rule, implementation could ambiguously return 404, 409, or silently no-op against an already-resolved job.
+2. The stale-decision check (AC #18, #19) is defined for mismatched `result_id` / `response_hash`, but the plan does not specify whether stale-decision evaluation runs before or after `decision_idempotency_key` replay, nor whether stale-decision checks must run before any state mutation or durable review event.
+3. `decision_idempotency_key` semantics are defined for replay (AC #20, #21) but not for same-key/different-payload, different-key/same-payload, or the namespaced key form. Without explicit rules, replay could silently overwrite a prior decision or accept a different decision under the same key.
+4. The Phase 4A.1 carry-forward amendment defines the `modified_result` shape and the conditional rule that `modified_result` is required iff `decision == "edit"`, but does not state the HTTP error code on violation.
+5. The `human.reviewed` decision vocabulary is currently described in AC #13–#17 using the older `accepted | modified | rejected | deferred | declined` strings. The Phase 4A.1 carry-forward amendment locked `ReviewDecision(str, Enum)` as `approve | edit | reject | defer | decline_to_act`. The audit-side decision vocabulary for the review endpoint is therefore ambiguous: implementation could either translate review decisions back to the older strings or carry the `ReviewDecision` values straight through.
+6. The plan does not define how `POST /jobs/{job_id}/review` and `POST /jobs/{job_id}/override` serialize against the same `proposal_ready` job. Without an explicit rule, a concurrent review and override could each mutate the job, double-emit terminal events, or race past stale-decision matching by relying solely on `result_id` / `response_hash` equality.
+
+This amendment closes all six gaps before any review-handler code is written.
+
+**Locked decisions:**
+
+1. **Reviewable-state conflict.**
+   - `POST /jobs/{job_id}/review` is valid only when the target job is in `proposal_ready`.
+   - A review request for any other job status returns HTTP `409 Conflict`.
+   - The 409 response body must include:
+     - `error`
+     - `current_status`
+     - `current_result_id`
+     - `current_response_hash`
+     - `message`
+
+2. **Stale-decision conflict.**
+   - `ReviewRequest.result_id` and `ReviewRequest.response_hash` must both match the current authoritative proposal.
+   - If either value mismatches, the handler returns HTTP `409 Conflict`.
+   - The 409 response body must include:
+     - `error`
+     - `current_status`
+     - `current_result_id`
+     - `current_response_hash`
+     - `message`
+   - Order of checks:
+     - If the `decision_idempotency_key` is already known and maps to a stored review outcome, idempotency replay is evaluated *before* stale-decision checks.
+     - If the `decision_idempotency_key` is not known, stale-decision checks are evaluated *before* any state mutation or durable review event.
+
+3. **`decision_idempotency_key` semantics.**
+   - **Same key + same payload:** return the original stored review outcome without repeating state transitions and without emitting duplicate durable decision events.
+   - **Same key + different payload:** return HTTP `409 Conflict`. Do not apply the new decision. Do not emit a new `human.reviewed` event.
+   - **Different key + same payload:** treat as a new review attempt. If the job is no longer in `proposal_ready` because a prior decision already resolved it, the wrong-status 409 from rule (1) applies.
+   - **Idempotency-key namespace:** keys are stored under the prefix `review_idem:{decision_idempotency_key}`, distinct from the existing submit-side idempotency namespace.
+
+4. **Review payload identity for idempotency comparison.**
+   The payload identity used to detect "same payload vs. different payload" under the same `decision_idempotency_key` includes:
+   - `job_id`
+   - `decision`
+   - `result_id`
+   - `response_hash`
+   - `modified_result`
+   - `decision_idempotency_key`
+
+5. **Decision outcomes.**
+   - `approve`: accepts the proposed result and transitions the job to `delivered`.
+   - `edit`: requires `modified_result`; stores the modified result as a new result artifact, updates the authoritative `result_id` / `response_hash` to the modified artifact, and transitions the job to `delivered`.
+   - `reject`: rejects the proposed result and transitions the job to `failed`. The existing plan does not define a more precise rejected terminal state for Phase 4A; if a future amendment introduces one, the more precise terminal state takes precedence.
+   - `defer`: records a non-terminal review/defer outcome and leaves the job in `proposal_ready`. After `defer`, the job remains reviewable. A later review attempt with a fresh `decision_idempotency_key` is permitted.
+   - `decline_to_act`: transitions the job to `closed_no_action`.
+
+6. **`modified_result` handler validation.**
+   - `modified_result` is required iff `decision == "edit"`.
+   - `modified_result` must be absent or `null` for `approve`, `reject`, `defer`, and `decline_to_act`.
+   - Violations return HTTP `422`.
+
+7. **`human.reviewed` event decision vocabulary for the review endpoint.**
+   - For `POST /jobs/{job_id}/review`, the emitted `human.reviewed` event carries the same decision vocabulary as `ReviewDecision`:
+     - `approve`
+     - `edit`
+     - `reject`
+     - `defer`
+     - `decline_to_act`
+   - Review endpoint decisions must not be translated to the older `accepted | modified | rejected | resubmitted` vocabulary.
+   - The audit record preserves the exact `ReviewDecision` value supplied by the endpoint.
+   - The pre-existing `human.reviewed` decision strings (`modified`, `auto_delivered`, etc.) emitted from `override_job` and the auto-accept loop are unchanged by this amendment; this rule governs only the review endpoint emit path.
+
+8. **Review-vs-override serialization for `proposal_ready` jobs.**
+   - `POST /jobs/{job_id}/review` and `POST /jobs/{job_id}/override` are mutually exclusive mutation surfaces for a `proposal_ready` job.
+   - First committed decision wins.
+   - If review commits first, a later override returns the existing override no-op form (`already_overridden` or equivalent) and must not mutate the job.
+   - If override commits first, a later review returns HTTP `409 Conflict` using the wrong-status / current-status response body defined in rule (1).
+   - The winning path must mark the job as no longer reviewable, or otherwise set its first-writer guard, *before* any durable audit await that could interleave with another mutation.
+   - The review handler must not rely solely on stale `result_id` / `response_hash` matching; it must also check reviewable status and the first-writer guard.
+   - `cancel`, `redirect`, and `escalate` overrides remain allowed against `proposal_ready` jobs before a review wins, consistent with the existing override-wins doctrine.
+   - Once any review or override decision wins, subsequent review/override attempts are blocked or no-op according to the rules above.
+
+9. **Implementation-order guard.**
+   - The review handler must set its first-writer guard before emitting durable `human.reviewed`, `job.delivered`, `job.failed`, or `job.closed_no_action` events.
+   - Override handling for `proposal_ready` jobs must set its first-writer guard before emitting durable `human.override` or terminal events.
+   - This amendment does not require introducing `asyncio.Lock` in Phase 4A.2.c; ordering and state guards are sufficient for this slice unless implementation discovers otherwise and stops for a new plan amendment.
+
+10. **Scope boundary.**
+    - This amendment does not implement code.
+    - This amendment does not wire `POST /jobs/{job_id}/review`.
+    - This amendment does not wire `GET /jobs` listing.
+    - This amendment does not update `STATUS.md` or `docs/SPEC-MAP.md`.
+    - Confidence default for successor jobs is out of scope for this amendment and remains a later implementation review item.
+
+**Effect on existing acceptance criteria:**
+
+- AC #13 is amended: review decision `approve` transitions a `proposal_ready` job to `delivered` and emits `human.reviewed` with `decision="approve"` (not `"accepted"`).
+- AC #14 is unchanged in intent. The emitted `human.reviewed` for `edit` carries `decision="edit"` (not `"modified"`); modified-result lineage is preserved as already specified, with the `result_id` / `response_hash` of the modified artifact becoming the authoritative result identity per rule (5).
+- AC #15 is amended: review decision `reject` transitions a `proposal_ready` job to `failed` and emits `human.reviewed` with `decision="reject"` (not `"rejected"`).
+- AC #16 is amended: review decision `defer` leaves the job in `proposal_ready`, emits `human.reviewed` with `decision="defer"` (not `"deferred"`), and does not increment promotion or demotion counters.
+- AC #17 is amended: review decision `decline_to_act` transitions the job to `closed_no_action`, emits `human.reviewed` with `decision="decline_to_act"` (not `"declined"`), and does not increment promotion or demotion counters.
+- AC #18 and AC #19 are unchanged in intent. The 409 response body fields (`error`, `current_result_id`, `current_response_hash`, `current_status`, `message`) are unchanged. This amendment additionally locks the wrong-status 409 from rule (1) using the same response body shape.
+- AC #20 and AC #21 are unchanged in intent. This amendment additionally locks the same-key/different-payload 409 conflict, the different-key handling, the `review_idem:` namespace, and the order of idempotency-replay versus stale-decision checks.
+- AC #24 is unchanged. The 422 response for unknown request fields is unaffected; the new 422 surface introduced by rule (6) is for the `modified_result` conditional handler-side rule, not for schema-side `extra="forbid"` validation.
+- AC #30 is amended: the closed list of `human.reviewed` decision values emitted by the review endpoint for Phase 4A is `approve | edit | reject | defer | decline_to_act`. The pre-existing `human.reviewed` decision values (`accepted`, `modified`, `auto_delivered`, etc.) emitted from `override_job` and the auto-accept loop are preserved unchanged for those code paths and are not new values added by this amendment.
+- All other acceptance criteria remain unchanged.
+
+**Scope boundary for this amendment:**
+
+- This amendment does not implement code.
+- This amendment does not wire `POST /jobs/{job_id}/review`.
+- This amendment does not wire `GET /jobs` listing.
+- This amendment does not modify the schema (the Phase 4A.1 carry-forward amendment already retyped `ReviewRequest.decision` as `ReviewDecision` and added `modified_result`).
+- This amendment does not change `STATUS.md` or `docs/SPEC-MAP.md`.
+
+**Out of scope for this amendment:**
+
+- No endpoint wiring.
+- No `job_manager` review-handling, idempotency-namespace, first-writer-guard, or serialization implementation.
+- No persistence, audit-event implementation, `STATUS.md`, or `docs/SPEC-MAP.md` changes.
+- No tests are run or added by this amendment.
