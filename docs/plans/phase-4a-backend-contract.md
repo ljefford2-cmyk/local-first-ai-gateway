@@ -262,3 +262,56 @@ This amendment closes both gaps before any endpoint wiring begins.
 - No `job_manager` review-handling behavior.
 - No persistence, audit-event, `STATUS.md`, or `docs/SPEC-MAP.md` changes.
 - No tests are run or added by this amendment.
+
+### 2026-04-26 — Define proposal population semantics
+
+**Authorized by:** Lawrence Jeffords on 2026-04-26 per `docs/plans/phase-4a-backend-contract.md` commit `dde0de6` and schema delta commit `8f1a2ef`.
+
+**Issue resolved (Phase 4A.2.a):**
+
+The schema now defines `Proposal` (AC #2) and `JobStatus.proposal_ready` (AC #1), but three population-side semantics remain ambiguous and must be locked before the proposal-population implementation slice (Phase 4A.2.b) begins:
+
+1. `proposed_by` provenance is unspecified. Without a definition, implementation could ambiguously source it from the human reviewer identity, the client device, or the producing model.
+2. `auto_accept_at` behavior for `proposal_ready` jobs is unspecified. Without a definition, implementation could silently introduce automatic acceptance from `proposal_ready`, which would change human-review authority.
+3. The trigger for entering `proposal_ready` is described in scope ("jobs held for human review by the existing review-gate logic") but is not stated as the single locked entry path. Without an explicit trigger, implementation could introduce parallel paths into `proposal_ready` that bypass the existing held / delivery-hold logic.
+
+This amendment closes all three gaps before any proposal-population code is written.
+
+**Locked decisions:**
+
+1. **`proposed_by` provenance.**
+   - `proposed_by` is the selected/producing model identifier known at response-generation time.
+   - For local proposals, `proposed_by` is the local model string.
+   - For cloud proposals, `proposed_by` is the target cloud model string.
+   - `proposed_by` identifies the producer of the proposed result. It is not the human reviewer identity and not the client device identity.
+
+2. **`auto_accept_at` v1 behavior for `proposal_ready` jobs.**
+   - `auto_accept_at` is `null` for v1 `proposal_ready` jobs.
+   - Phase 4A does not introduce automatic acceptance from `proposal_ready`.
+   - Any future auto-accept behavior for `proposal_ready` requires a separate plan amendment because it changes human-review authority.
+
+3. **`proposal_ready` trigger.**
+   - A job enters `proposal_ready` when the existing review-gate / delivery-hold logic determines that a result must be held for human review before delivery or closure.
+   - `proposal_ready` is the client-visible representation of that held result.
+   - This preserves the sequence: result produced → proposal recorded → client retrieves proposal → review endpoint later decides outcome.
+
+**Effect on existing acceptance criteria:**
+
+- AC #2 is unchanged in field shape. This amendment defines the runtime meaning of the `proposed_by` field.
+- AC #10 is unchanged. The "no auto-accept applies" branch is now the only branch that fires for `proposal_ready` in v1; the absolute-timestamp branch remains defined for future use but is not exercised by Phase 4A `proposal_ready` jobs.
+- AC #8 is unchanged. This amendment makes explicit that the held / delivery-hold path is the sole entry into `proposal_ready` for Phase 4A.
+- All other acceptance criteria remain unchanged.
+
+**Scope boundary for this amendment:**
+
+- This amendment does not implement code.
+- This amendment does not wire `POST /jobs/{job_id}/review`.
+- This amendment does not wire `GET /jobs` listing.
+- This amendment does not resolve review idempotency ambiguity or wrong-status review behavior; those require a later amendment before the review-handler slice.
+
+**Out of scope for this amendment:**
+
+- No endpoint wiring.
+- No `job_manager` proposal-population or review-handling behavior.
+- No persistence, audit-event, `STATUS.md`, or `docs/SPEC-MAP.md` changes.
+- No tests are run or added by this amendment.
