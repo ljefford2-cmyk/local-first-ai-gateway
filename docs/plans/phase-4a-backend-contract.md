@@ -315,3 +315,79 @@ This amendment closes all three gaps before any proposal-population code is writ
 - No `job_manager` proposal-population or review-handling behavior.
 - No persistence, audit-event, `STATUS.md`, or `docs/SPEC-MAP.md` changes.
 - No tests are run or added by this amendment.
+
+### 2026-04-26 — Define proposal-ready audit event and triggers
+
+**Authorized by:** Lawrence Jeffords on 2026-04-26 per `docs/plans/phase-4a-backend-contract.md` commit `8377884` and implementation discovery report.
+
+**Issue resolved (Phase 4A.2.b):**
+
+The 2026-04-26 amendment "Define proposal population semantics" locked `proposed_by` provenance, `auto_accept_at` v1 behavior, and the high-level `proposal_ready` entry path, but three implementation-discovery findings remain ambiguous and must be locked before the proposal-population implementation slice (Phase 4A.2.b) begins:
+
+1. Entering `proposal_ready` is a lifecycle state transition but the plan does not define a durable audit event that records that transition. Without one, the held-result decision is not auditable until a later `human.reviewed` event fires, which can be never (for example, when a job remains in `proposal_ready` indefinitely under repeated `defer`).
+2. The existing held / delivery-hold logic in `orchestrator/job_manager.py` includes `pre_action` and `cost_approval` hold types that fire before a result artifact exists, alongside `on_accept` (post-result) holds and a `delivery_hold` flag on `wal.permission_check`. The plan does not distinguish result-holding from pre-action / cost-approval holds. A literal reading of "the held / delivery-hold path is the sole entry into `proposal_ready`" could treat all `held` permission checks as `proposal_ready` triggers, including ones with no result to propose.
+3. Proposal derivation is implicitly required to populate `JobStatusResponse.proposal` but is not located. Without a locked location, implementation could duplicate proposal-derivation rules in the HTTP route layer instead of centralizing them in `JobManager`.
+
+This amendment closes all three gaps before any proposal-population code is written.
+
+**Locked decisions:**
+
+1. **Durable `job.proposal_ready` audit event.**
+   - Entering `proposal_ready` emits a durable lifecycle event of type `job.proposal_ready`.
+   - It is emitted after the result/response artifact has been created and recorded, and before the pipeline stops for human review.
+   - It is not a `human.reviewed` event and does not imply acceptance, rejection, delivery, or closure.
+   - It marks the held-result decision in the audit log so that pending review state is durably attributable even when a `human.reviewed` event is never emitted (for example, indefinite `defer` or operator silence).
+
+2. **`job.proposal_ready` payload.**
+   The payload includes at minimum:
+   - `proposal_id`
+   - `result_id`
+   - `response_hash`
+   - `proposed_by`
+   - `governing_capability_id`
+   - `confidence`
+   - `auto_accept_at`
+   - `hold_reason`
+
+   `hold_reason` values for Phase 4A.2.b are exactly:
+   - `pre_delivery`
+   - `on_accept`
+
+3. **`proposal_ready` trigger.**
+   - `proposal_ready` applies only when a result exists and must be held for human review.
+   - `delivery_hold == true` on a `wal.permission_check` is an authorized `proposal_ready` trigger.
+   - `result == "held"` with `hold_type == "on_accept"` is an authorized `proposal_ready` trigger if a result exists.
+   - `pre_action` and `cost_approval` holds are not `proposal_ready` triggers because no result artifact exists yet at the point those holds fire.
+   - `blocked` permission checks remain failure / blocked behavior and do not become proposals.
+
+4. **`proposed_by` local route.**
+   - For local proposals, the literal producing local model tag is the `proposed_by` value.
+   - The current local value may be `candidate_models[0]`, for example `"llama3.1:8b"`.
+   - Historical proposals retain the model string used at proposal time; no later normalization or current-model lookup is performed.
+
+5. **Proposal derivation location.**
+   - Proposal construction should be centralized in `JobManager` or an equivalent non-route helper.
+   - The `GET /jobs/{job_id}` route may call that helper and pass the returned `Proposal` into `JobStatusResponse`.
+   - The HTTP route should not duplicate proposal-derivation rules.
+
+**Effect on existing acceptance criteria:**
+
+- AC #2 is unchanged in field shape. This amendment defines a separate durable lifecycle event (`job.proposal_ready`) that records the transition into `proposal_ready` and carries proposal lineage onto the audit log; the `Proposal` model surfaced on `JobStatusResponse` is unchanged.
+- AC #8 is unchanged in intent. This amendment narrows the held-path entry into `proposal_ready` to the result-holding subset (post-result `on_accept` holds and `delivery_hold == true`) and explicitly excludes `pre_action` and `cost_approval` holds from being proposal triggers.
+- AC #9 is unchanged. This amendment locates proposal derivation in `JobManager` (or an equivalent non-route helper) so the `GET /jobs/{job_id}` route obtains the `Proposal` from that helper rather than constructing it inline.
+- The 2026-04-26 amendment "Define proposal population semantics" is unchanged. This amendment supplements its `proposed_by` provenance rule by stating that for local proposals the producing model tag is used as the literal `proposed_by` value.
+- All other acceptance criteria remain unchanged.
+
+**Scope boundary for this amendment:**
+
+- This amendment does not implement code.
+- This amendment does not wire `POST /jobs/{job_id}/review`.
+- This amendment does not wire `GET /jobs` listing.
+- This amendment does not resolve review idempotency ambiguity or wrong-status review behavior; those require a later amendment before the review-handler slice.
+
+**Out of scope for this amendment:**
+
+- No endpoint wiring.
+- No `job_manager` proposal-population, proposal-event-emission, or review-handling behavior.
+- No persistence, audit-event implementation, `STATUS.md`, or `docs/SPEC-MAP.md` changes.
+- No tests are run or added by this amendment.
