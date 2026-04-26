@@ -34,6 +34,7 @@ from events import (
     event_job_delivered,
     event_job_dispatched,
     event_job_failed,
+    event_job_proposal_ready,
     event_job_queued,
     event_job_response_received,
     event_job_revoked,
@@ -42,7 +43,7 @@ from events import (
     event_wal_permission_check,
 )
 from override_types import CONDITIONAL_DEMOTION_TYPES, TERMINAL_STATES, is_sentinel_failure
-from models import Job, JobStatus
+from models import Job, JobStatus, Proposal
 from permission_checker import JobContext, PermissionChecker
 from registry import EgressRegistry
 from worker_context import WorkerContext
@@ -503,6 +504,7 @@ class JobManager:
             routing_recommendation=routing,
             candidate_models=candidate_models,
             governing_capability_id=target_capability_id,
+            confidence=1.0,
         )
 
         self._jobs[new_job_id] = successor
@@ -685,6 +687,7 @@ class JobManager:
             job.routing_recommendation = routing
             job.candidate_models = models
             job.governing_capability_id = capability_id
+            job.confidence = classification.confidence
 
         # Phase 5E: record WAL level at classification time (v1: all WAL-0)
         job.wal_level = 0
@@ -715,6 +718,11 @@ class JobManager:
             return
 
         # 2. Permission check
+        # Phase 4A.2.b: capture the result-holding signal (delivery_hold or
+        # on_accept) so the response/result boundary can transition the job
+        # into proposal_ready instead of silently delivering.
+        perm_delivery_hold = False
+        perm_hold_type: str | None = None
         if self._permission_checker:
             # Determine the dispatch action based on routing
             if routing == "local":
@@ -735,6 +743,8 @@ class JobManager:
                 job_ctx=job_ctx,
             )
             perm_source_event_id = perm_result.source_event_id
+            perm_delivery_hold = bool(perm_result.delivery_hold)
+            perm_hold_type = perm_result.hold_type
 
             if perm_result.result == "blocked":
                 failed_event = event_job_failed(
@@ -749,8 +759,11 @@ class JobManager:
                 return
 
             if perm_result.result == "held":
-                # In v1, held actions are logged but pipeline continues
-                # (no phone/watch app to approve yet)
+                # pre_action and cost_approval holds fire before a result
+                # artifact exists; per Phase 4A.2.b they are not
+                # proposal_ready triggers and the v1 stub-mode behavior
+                # (proceed) is preserved here. on_accept is captured above
+                # and surfaced at the response/result boundary.
                 logger.info(
                     "Job %s action '%s' held (%s) — proceeding in v1 stub mode",
                     job_id, dispatch_action, perm_result.hold_type,
@@ -966,10 +979,50 @@ class JobManager:
         job.response_received_at = _now_iso()
         job.result = response_text
         job.result_id = result_id
+        job.response_hash = response_hash
         self._persist_job(job)
 
         # Write original result to disk for lineage
         _write_result(result_id, response_text)
+
+        # Phase 4A.2.b: result-holding review-gate outcomes (delivery_hold or
+        # post-result on_accept) transition the job to proposal_ready and
+        # halt the pipeline before delivery. A durable job.proposal_ready
+        # event records the held-result decision in the audit log.
+        hold_reason = self._derive_proposal_hold_reason(
+            delivery_hold=perm_delivery_hold,
+            hold_type=perm_hold_type,
+        )
+        if hold_reason is not None:
+            if job.proposal_id is None:
+                job.proposal_id = _uuid7()
+            job.status = JobStatus.proposal_ready.value
+            self._persist_job(job)
+
+            proposal_event = event_job_proposal_ready(
+                job_id=job_id,
+                proposal_id=job.proposal_id,
+                result_id=result_id,
+                response_hash=response_hash,
+                proposed_by=models[0],
+                governing_capability_id=capability_id,
+                confidence=job.confidence,
+                auto_accept_at=None,
+                hold_reason=hold_reason,
+            )
+            await self._audit.emit_durable(proposal_event)
+
+            # Phase 6E: teardown worker on proposal_ready (no further
+            # pipeline work happens until a review decision arrives).
+            if worker_ctx is not None and self._worker_lifecycle is not None:
+                await self._worker_lifecycle.teardown_worker(worker_ctx)
+                self._worker_contexts.pop(job_id, None)
+
+            logger.info(
+                "Job %s held for review (proposal_ready, hold_reason=%s)",
+                job_id, hold_reason,
+            )
+            return
 
         # 4. Deliver
         deliver_event = event_job_delivered(job_id=job_id)
@@ -985,6 +1038,62 @@ class JobManager:
             self._worker_contexts.pop(job_id, None)
 
         logger.info("Job %s delivered successfully", job_id)
+
+    @staticmethod
+    def _derive_proposal_hold_reason(
+        *,
+        delivery_hold: bool,
+        hold_type: str | None,
+    ) -> str | None:
+        """Map the captured permission outcome to a Phase 4A.2.b hold_reason.
+
+        Authorized triggers:
+            - delivery_hold == True       -> "pre_delivery"
+            - hold_type   == "on_accept"  -> "on_accept" (only valid once a
+              result exists; this helper is invoked at the response/result
+              boundary so that precondition is structurally satisfied)
+
+        pre_action and cost_approval hold types are not proposal_ready
+        triggers and yield None.
+        """
+        if delivery_hold:
+            return "pre_delivery"
+        if hold_type == "on_accept":
+            return "on_accept"
+        return None
+
+    def get_proposal(self, job_id: str) -> Optional[Proposal]:
+        """Return a Proposal for a proposal_ready job, otherwise None.
+
+        Centralizes proposal derivation so the HTTP route does not duplicate
+        proposal-population rules. proposed_by is the producing model
+        identifier captured at proposal time (candidate_models[0]) per the
+        2026-04-26 plan amendment. auto_accept_at is None in v1.
+        """
+        job = self._jobs.get(job_id)
+        if job is None:
+            return None
+        if job.status != JobStatus.proposal_ready.value:
+            return None
+        if (
+            job.proposal_id is None
+            or job.result_id is None
+            or job.response_hash is None
+            or job.governing_capability_id is None
+            or job.confidence is None
+            or not job.candidate_models
+        ):
+            return None
+        return Proposal(
+            proposal_id=job.proposal_id,
+            job_id=job.job_id,
+            result_id=job.result_id,
+            response_hash=job.response_hash,
+            proposed_by=job.candidate_models[0],
+            governing_capability_id=job.governing_capability_id,
+            confidence=job.confidence,
+            auto_accept_at=None,
+        )
 
     def _check_blocked_cloud_routes(self, capability_id: str) -> list[str]:
         """Return route_ids of disabled cloud routes that list this capability.

@@ -530,6 +530,43 @@ def event_job_revoked(
     )
 
 
+def event_job_proposal_ready(
+    job_id: str,
+    proposal_id: str,
+    result_id: str,
+    response_hash: str,
+    proposed_by: str,
+    governing_capability_id: str,
+    confidence: float | None,
+    auto_accept_at: str | None,
+    hold_reason: str,
+) -> dict[str, Any]:
+    """Build a job.proposal_ready event — durable lifecycle transition.
+
+    Emitted after the result/response artifact has been recorded and before
+    the pipeline stops for human review. Records the held-result decision
+    in the audit log so pending review state is durably attributable even
+    if no human.reviewed event is ever emitted.
+
+    hold_reason is one of: "pre_delivery" | "on_accept".
+    """
+    return build_event(
+        event_type="job.proposal_ready",
+        job_id=job_id,
+        capability_id=governing_capability_id,
+        payload={
+            "proposal_id": proposal_id,
+            "result_id": result_id,
+            "response_hash": response_hash,
+            "proposed_by": proposed_by,
+            "governing_capability_id": governing_capability_id,
+            "confidence": confidence,
+            "auto_accept_at": auto_accept_at,
+            "hold_reason": hold_reason,
+        },
+    )
+
+
 def event_human_reviewed(
     job_id: str,
     decision: str,

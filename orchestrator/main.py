@@ -443,6 +443,8 @@ async def get_job(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    proposal = job_manager.get_proposal(job_id)
+
     return JobStatusResponse(
         job_id=job.job_id,
         status=job.status,
@@ -455,6 +457,7 @@ async def get_job(job_id: str):
         routing_recommendation=job.routing_recommendation,
         result=job.result,
         error=job.error,
+        proposal=proposal,
     )
 
 

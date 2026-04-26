@@ -144,3 +144,7 @@ class Job:
     idempotency_key: Optional[str] = None
     # Phase 7D: recovery re-dispatch counter (max 2 re-dispatches)
     recovery_dispatch_count: int = 0
+    # Phase 4A.2.b: proposal-population fields
+    proposal_id: Optional[str] = None
+    response_hash: Optional[str] = None
+    confidence: Optional[float] = None
