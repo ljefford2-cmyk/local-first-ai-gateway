@@ -208,3 +208,57 @@ Phase 4A introduces the following local contract terms for this plan only:
 - `client_source`: mobile audit-source identity, limited to `phone_app` and `watch_app`.
 - `decision_idempotency_key`: client-supplied replay-protection key for review decisions.
 - `stale decision`: review request whose `result_id` or `response_hash` no longer matches the current authoritative result.
+
+## Amendments
+
+### 2026-04-26 — Reconcile ReviewRequest (AC #5) with edit-result storage (AC #14)
+
+**Authorized by:** Lawrence Jeffords on 2026-04-26 per `docs/plans/phase-4a-backend-contract.md` commit `d2beec6`.
+
+**Issue resolved (Phase 4A.1 carry-forward):**
+
+- AC #5 originally defined `ReviewRequest` with `decision`, `result_id`, `response_hash`, and `decision_idempotency_key`.
+- AC #14 requires the `edit` decision to store a modified result and preserve modified-result lineage.
+- `ReviewRequest` uses `extra="forbid"`, so edited content has no legal payload slot and would be rejected as an unknown field.
+- `ReviewRequest.decision` is currently typed as a free-form `str` rather than a locked enum, allowing any string value to pass schema validation and pushing the entire decision-vocabulary check to handler logic.
+
+This amendment closes both gaps before any endpoint wiring begins.
+
+**Schema amendments to `ReviewRequest`:**
+
+1. `ReviewRequest` is amended to include:
+   - `modified_result: Optional[str] = None`
+
+2. Handler-side validation rule (enforced by the review endpoint, not by the schema):
+   - `modified_result` is required if and only if `decision == "edit"`.
+   - For all other decisions (`approve`, `reject`, `defer`, `decline_to_act`), `modified_result` must be absent or `null`.
+   - Violations of this rule must be rejected by the handler with HTTP `422`.
+
+3. `ReviewRequest.decision` is locked as `ReviewDecision(str, Enum)` with exactly these values, and no others:
+   - `approve`
+   - `edit`
+   - `reject`
+   - `defer`
+   - `decline_to_act`
+
+   `ReviewDecision` follows the same `(str, Enum)` precedent already established in `orchestrator/models.py` by `InputModality`, `Device`, `ClientSource`, and `JobStatus`.
+
+**Required Phase 4A sequencing (locked):**
+
+1. **Plan amendment** — this commit. Docs-only.
+2. **Schema delta** — a separate small commit that updates `orchestrator/models.py` to add the `ReviewDecision` enum, retype `ReviewRequest.decision` as `ReviewDecision`, and add `modified_result: Optional[str] = None`, plus the corresponding additions to `tests/test_phase4a_backend_contract.py`. No endpoint, persistence, audit, or handler logic in this commit.
+3. **Endpoint wiring** — third, only after the schema-delta commit lands. Endpoint wiring must not begin until then.
+
+**Effect on existing acceptance criteria:**
+
+- AC #5 is amended to read: `ReviewRequest` exists for `POST /jobs/{job_id}/review`; requires `decision`, `result_id`, `response_hash`, and `decision_idempotency_key`; includes optional `modified_result`; types `decision` as `ReviewDecision`; and uses `extra="forbid"`.
+- AC #14 is unchanged in intent. This amendment supplies the explicit legal payload slot through which the edited result is delivered.
+- AC #24 (`POST /jobs/{job_id}/review` with an unknown field returns HTTP `422`) is unaffected. `modified_result` becomes a known field; any other field remains unknown.
+- All other acceptance criteria remain unchanged.
+
+**Out of scope for this amendment:**
+
+- No endpoint wiring.
+- No `job_manager` review-handling behavior.
+- No persistence, audit-event, `STATUS.md`, or `docs/SPEC-MAP.md` changes.
+- No tests are run or added by this amendment.
