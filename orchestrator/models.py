@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------- Enums ----------
@@ -22,6 +22,11 @@ class Device(str, Enum):
     phone = "phone"
 
 
+class ClientSource(str, Enum):
+    phone_app = "phone_app"
+    watch_app = "watch_app"
+
+
 class JobStatus(str, Enum):
     submitted = "submitted"
     classified = "classified"
@@ -30,21 +35,48 @@ class JobStatus(str, Enum):
     delivered = "delivered"
     failed = "failed"
     revoked = "revoked"
+    proposal_ready = "proposal_ready"
+    closed_no_action = "closed_no_action"
 
 
 # ---------- HTTP request / response ----------
 
+class Proposal(BaseModel):
+    proposal_id: str
+    job_id: str
+    result_id: str
+    response_hash: str
+    proposed_by: str
+    governing_capability_id: str
+    confidence: float
+    auto_accept_at: Optional[str] = None
+
+
 class JobSubmitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     raw_input: str
     input_modality: InputModality
     device: Device
     idempotency_key: Optional[str] = None
+    client_source: Optional[ClientSource] = None
+    client_source_event_id: Optional[str] = None
+    client_timestamp: Optional[str] = None
 
 
 class JobSubmitResponse(BaseModel):
     job_id: str
     status: str
     created_at: str
+
+
+class ReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: str
+    result_id: str
+    response_hash: str
+    decision_idempotency_key: str
 
 
 class JobStatusResponse(BaseModel):
@@ -59,6 +91,7 @@ class JobStatusResponse(BaseModel):
     routing_recommendation: Optional[str] = None
     result: Optional[str] = None
     error: Optional[str] = None
+    proposal: Optional[Proposal] = None
 
 
 class HealthResponse(BaseModel):
