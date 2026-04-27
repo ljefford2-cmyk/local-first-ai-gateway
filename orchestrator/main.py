@@ -15,7 +15,8 @@ import time
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, HTTPException
+import uuid_utils
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from audit_client import AuditLogClient
@@ -29,6 +30,7 @@ from hub_state import HubState, HubStateManager
 from job_manager import JobManager
 from models import (
     HealthResponse,
+    JobListResponse,
     JobStatus,
     JobStatusResponse,
     JobSubmitRequest,
@@ -431,6 +433,28 @@ async def submit_job(req: JobSubmitRequest):
         status=job.status,
         created_at=job.created_at,
     )
+
+
+@app.get("/jobs", response_model=JobListResponse)
+async def list_jobs(
+    status: JobStatus,
+    since: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    if job_manager is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "not_ready", "detail": "Orchestrator not initialized"},
+        )
+    if since is not None:
+        try:
+            uuid_utils.UUID(since)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=422,
+                detail="Malformed 'since' cursor — must be a valid UUID string",
+            )
+    return job_manager.list_jobs(status=status.value, since=since, limit=limit)
 
 
 @app.get("/jobs/{job_id}", response_model=JobStatusResponse)

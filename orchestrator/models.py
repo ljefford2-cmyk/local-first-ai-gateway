@@ -103,6 +103,12 @@ class JobStatusResponse(BaseModel):
     proposal: Optional[Proposal] = None
 
 
+class JobListResponse(BaseModel):
+    items: list[JobStatusResponse]
+    next_cursor: Optional[str] = None
+    count: int
+
+
 class HealthResponse(BaseModel):
     orchestrator_status: str
     audit_log_status: str

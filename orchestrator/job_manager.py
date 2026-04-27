@@ -44,7 +44,7 @@ from events import (
     event_wal_permission_check,
 )
 from override_types import CONDITIONAL_DEMOTION_TYPES, TERMINAL_STATES, is_sentinel_failure
-from models import Job, JobStatus, Proposal, ReviewDecision
+from models import Job, JobListResponse, JobStatus, JobStatusResponse, Proposal, ReviewDecision
 
 # Phase 4A.2.d: terminal/resolving review decisions that close the proposal.
 # defer is non-terminal and does not close the proposal.
@@ -1513,6 +1513,62 @@ class JobManager:
             governing_capability_id=job.governing_capability_id,
             confidence=job.confidence,
             auto_accept_at=None,
+        )
+
+    def list_jobs(
+        self,
+        status: "JobStatus | str",
+        since: Optional[str],
+        limit: int,
+    ) -> JobListResponse:
+        """Phase 4A.2.e: list jobs by status with UUIDv7 cursor pagination.
+
+        Reads from the in-memory job cache only. Newest-first ordering by
+        UUIDv7 job_id descending. since is an exclusive UUIDv7 boundary —
+        jobs whose job_id < since are returned. The since value need not be
+        present in the filtered set. next_cursor is the job_id of the last
+        returned item when more matching jobs remain after this page,
+        otherwise None.
+        """
+        status_value = status.value if isinstance(status, JobStatus) else status
+
+        matching = sorted(
+            (j for j in self._jobs.values() if j.status == status_value),
+            key=lambda j: j.job_id,
+            reverse=True,
+        )
+
+        if since is not None:
+            matching = [j for j in matching if j.job_id < since]
+
+        page = matching[:limit]
+        has_more = len(matching) > limit
+        next_cursor = page[-1].job_id if (has_more and page) else None
+
+        items: list[JobStatusResponse] = []
+        for job in page:
+            proposal = self.get_proposal(job.job_id)
+            items.append(
+                JobStatusResponse(
+                    job_id=job.job_id,
+                    status=job.status,
+                    created_at=job.created_at,
+                    classified_at=job.classified_at,
+                    dispatched_at=job.dispatched_at,
+                    response_received_at=job.response_received_at,
+                    delivered_at=job.delivered_at,
+                    request_category=job.request_category,
+                    routing_recommendation=job.routing_recommendation,
+                    result=job.result,
+                    error=job.error,
+                    proposal=proposal,
+                )
+            )
+
+        return JobListResponse(
+            items=items,
+            next_cursor=next_cursor,
+            count=len(items),
         )
 
     def _check_blocked_cloud_routes(self, capability_id: str) -> list[str]:
