@@ -521,3 +521,129 @@ This amendment closes all six gaps before any review-handler code is written.
 - No `job_manager` review-handling, idempotency-namespace, first-writer-guard, or serialization implementation.
 - No persistence, audit-event implementation, `STATUS.md`, or `docs/SPEC-MAP.md` changes.
 - No tests are run or added by this amendment.
+
+### 2026-04-26 — Define review implementation mechanics
+
+**Authorized by:** Lawrence Jeffords on 2026-04-26 per `docs/plans/phase-4a-backend-contract.md` commit `6456033` and the Phase 4A.2.d review-handler discovery report.
+
+**Issue resolved (Phase 4A.2.d):**
+
+The Phase 4A.2.c amendment "Define review handler conflict and serialization semantics" landed wrong-status 409 behavior, idempotency-vs-stale ordering, decision-payload identity for idempotency comparison, `human.reviewed` decision vocabulary, and review-vs-override serialization. Four implementation-mechanics ambiguities remain and must be locked before `POST /jobs/{job_id}/review` is implemented:
+
+1. Phase 4A.2.c rule (5) transitions a `decline_to_act` review to `closed_no_action`, but the plan does not define a durable lifecycle event for that transition distinct from `human.reviewed`. Without one, the lifecycle transition is only recoverable by inferring it from the `human.reviewed` decision string.
+2. Phase 4A.2.c rules (8) and (9) require a first-writer guard for review and override, but do not name the field that implements the review-side guard. Without an explicit field, implementation could either reuse `override_type` for review decisions (collapsing two distinct mutation surfaces) or pick another inconsistent field.
+3. Phase 4A.2.c rule (9) requires override handling for `proposal_ready` jobs to set its first-writer guard before any durable terminal event. The current `override_job` implementation in `orchestrator/job_manager.py` sets `job.override_type` *after* the durable emits, so a literal reading of rule (9) co-implicates the override path on `proposal_ready` jobs and the scope of that fix must be locked.
+4. Phase 4A.2.c rules (3) and (4) define the idempotency-key namespace and payload identity but do not define the storage API shape on `IdempotencyStore` for review records, the persistence boundary, or the replay-response shape used to reconstitute the original HTTP outcome.
+
+This amendment closes all four gaps before any review-handler code is written.
+
+**Locked decisions:**
+
+1. **`job.closed_no_action` durable lifecycle event.**
+   - Entering `closed_no_action` emits a separate durable lifecycle event of type `job.closed_no_action`.
+   - It is emitted after the winning `decline_to_act` review decision is recorded and before the review handler returns its final response.
+   - It is not a `human.reviewed` event and does not replace `human.reviewed`.
+   - It records the lifecycle transition caused by `decline_to_act` so that `closed_no_action` is durably attributable in the audit log independently of the `human.reviewed` decision string.
+
+2. **`job.closed_no_action` payload.**
+   The payload includes at minimum:
+   - `result_id`
+   - `response_hash`
+   - `review_decision`
+   - `decision_idempotency_key`
+   - `governing_capability_id`
+   - `reason`
+
+   Required values:
+   - `review_decision = "decline_to_act"`
+   - `reason = "decline_to_act"`
+
+3. **`review_decision` first-writer guard field.**
+   - The review handler's first-writer guard is a new optional field on the `Job` record, declared as:
+     - `review_decision: Optional[str] = None`
+   - `review_decision` is the first-writer guard for review decisions.
+   - Closed value set:
+     - `approve`
+     - `edit`
+     - `reject`
+     - `defer`
+     - `decline_to_act`
+   - `defer` is non-terminal and does not close the proposal. The `defer` decision itself is still recorded for idempotency replay.
+   - Terminal/resolving review decisions are:
+     - `approve`
+     - `edit`
+     - `reject`
+     - `decline_to_act`
+   - For terminal/resolving decisions, `review_decision` must be set before any durable `human.reviewed`, `job.delivered`, `job.failed`, or `job.closed_no_action` emit.
+
+4. **Review-vs-override first-writer behavior.**
+   - `review_job` must reject review attempts when `job.override_type` is already set.
+   - `override_job` must reject or no-op override attempts when `job.review_decision` is already set to a terminal/resolving decision.
+   - If review wins first, a later override returns the existing override no-op form and does not mutate the job.
+   - If override wins first, a later review returns HTTP `409 Conflict` using the wrong-status / current-status response body defined by the Phase 4A.2.c amendment.
+   - The implementation must not reuse `override_type` to represent review decisions.
+   - The implementation must not put review decisions into `override_type`, because review and override are separate mutation surfaces.
+
+5. **`proposal_ready` override ordering co-fix.**
+   - For `proposal_ready` jobs, `override_job` must set its first-writer guard before any durable `human.override` or terminal lifecycle event await.
+   - The first-writer guard for override remains `override_type`.
+   - This co-fix is in scope for the review-handler implementation slice because rule (4) above requires review/override serialization on `proposal_ready` jobs.
+   - This co-fix does not require refactoring all historical override paths unless that refactoring is needed to make `proposal_ready` serialization correct.
+
+6. **Review idempotency storage API shape.**
+   - The existing `IdempotencyStore` is extended; no second store is created.
+   - No SQL migration is added for this slice.
+   - Review records use a separate key namespace prefix:
+     - `review_idem:{decision_idempotency_key}`
+   - `IdempotencyStore` gains methods equivalent to:
+     - `store_review_outcome(decision_idempotency_key, payload_identity, outcome, applied)`
+     - `get_review_outcome(decision_idempotency_key)`
+   - The stored review outcome record must include:
+     - `payload_identity`
+     - `outcome`
+     - `applied`
+     - `created_at`
+   - The implementation may use a separate in-memory dictionary for review records if that is the smallest safe extension, but it must persist review records to the existing `state` table.
+
+7. **Review idempotency payload identity.**
+   `payload_identity` must include:
+   - `job_id`
+   - `decision`
+   - `result_id`
+   - `response_hash`
+   - `modified_result`
+   - `decision_idempotency_key`
+
+8. **Review idempotency replay response.**
+   - `outcome` stores the original HTTP response body and status-code envelope needed to replay same-key/same-payload without reapplying state transitions.
+   - Same key + same payload returns the original `outcome`.
+   - Same key + different payload returns HTTP `409 Conflict`.
+   - No duplicate durable `human.reviewed` event is emitted on replay.
+
+9. **Scope boundary.**
+   - This amendment does not implement code.
+   - This amendment does not wire `POST /jobs/{job_id}/review`.
+   - This amendment does not wire `GET /jobs` listing.
+   - This amendment does not update `STATUS.md` or `docs/SPEC-MAP.md`.
+   - Confidence default for successor jobs remains out of scope and is a later implementation review item.
+
+**Effect on existing acceptance criteria:**
+
+- AC #17 is unchanged in intent. The `decline_to_act` decision still transitions the job to `closed_no_action` and emits `human.reviewed` with `decision="decline_to_act"` per the Phase 4A.2.c amendment. This amendment additionally requires a separate durable `job.closed_no_action` lifecycle event so the transition is attributable in the audit log independently of the `human.reviewed` decision string.
+- All other acceptance criteria remain unchanged.
+
+**Scope boundary for this amendment:**
+
+- This amendment does not implement code.
+- This amendment does not wire `POST /jobs/{job_id}/review`.
+- This amendment does not wire `GET /jobs` listing.
+- This amendment does not modify the schema.
+- This amendment does not change `STATUS.md` or `docs/SPEC-MAP.md`.
+
+**Out of scope for this amendment:**
+
+- No endpoint wiring.
+- No `job_manager` review-handling, `review_decision` guard, override-ordering co-fix, or serialization implementation.
+- No `IdempotencyStore` review-namespace implementation.
+- No persistence, audit-event implementation, `STATUS.md`, or `docs/SPEC-MAP.md` changes.
+- No tests are run or added by this amendment.
