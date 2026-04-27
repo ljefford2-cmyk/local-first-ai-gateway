@@ -647,3 +647,116 @@ This amendment closes all four gaps before any review-handler code is written.
 - No `IdempotencyStore` review-namespace implementation.
 - No persistence, audit-event implementation, `STATUS.md`, or `docs/SPEC-MAP.md` changes.
 - No tests are run or added by this amendment.
+
+### 2026-04-26 — Define jobs listing contract
+
+**Authorized by:** Lawrence Jeffords on 2026-04-26 per `docs/plans/phase-4a-backend-contract.md` commit `8b3946e` and Phase 4A.2.e listing discovery report.
+
+**Issue resolved (Phase 4A.2.e):**
+
+The plan names `GET /jobs?status={status}&since={cursor}&limit={n}` (Scope, AC #11, AC #12, AC #31) but leaves seven listing-contract decisions ambiguous:
+
+1. The query-parameter contract is not locked: which parameters are required, which are optional, and which return validation errors versus default values.
+2. `status` validation behavior is not defined: whether unknown status values return `422`, fall through to an empty list, or raise `500`.
+3. `since` semantics are undefined: whether it is inclusive or exclusive, what kind of cursor it carries (job_id, timestamp, or opaque token), and how malformed or stale cursor values are handled.
+4. Result ordering is unspecified. Without an ordering rule, `since` cannot be evaluated deterministically and pagination cannot be guaranteed not to skip or duplicate jobs.
+5. `limit` defaults and bounds are unspecified. Without a default, missing `limit` would either return all matching jobs or rely on caller convention; without bounds, large `limit` values could return unbounded result sets.
+6. The response shape is unspecified. The plan does not state whether `GET /jobs` returns a bare array of `JobStatusResponse` objects, a wrapper object with pagination metadata, or a different shape entirely.
+7. The data source for Phase 4A.2.e is unspecified. The Files-Likely-Affected section flags `orchestrator/persistence.py` as a possible target ("Add query support if status-based enumeration cannot be served from existing job state access"), but does not lock whether Phase 4A.2.e listing reads from the `JobManager` in-memory job cache, from SQLite-backed history, or from both.
+
+This amendment closes all seven gaps before any listing-endpoint implementation begins.
+
+**Locked decisions:**
+
+1. **Endpoint.**
+   - `GET /jobs` is the only listing endpoint in Phase 4A.
+   - No sibling listing route (e.g., `/jobs/list`, `/proposals`, `/inbox`) is introduced by this amendment.
+   - `GET /jobs/{job_id}` behavior is unchanged.
+
+2. **Query parameters.**
+   - `status`: **required.**
+   - `since`: optional.
+   - `limit`: optional.
+
+3. **`status` semantics.**
+   - `status` must be one of the existing `JobStatus` enum values declared in `orchestrator/models.py`.
+   - An invalid `status` value returns HTTP `422`.
+   - For Phase 4A.2.e, the primary acceptance target is `status=proposal_ready`.
+   - The implementation may support all `JobStatus` enum values that exist in the in-memory job cache, but it must not invent new statuses for this listing slice.
+
+4. **`since` cursor.**
+   - `since` is an **exclusive** UUIDv7 `job_id` cursor.
+   - Under newest-first ordering, `since` means: return jobs whose `job_id` is older than the cursor `job_id`.
+   - The job identified by `since` is not repeated in the response.
+   - A malformed `since` value (not a syntactically valid UUIDv7 / UUID string) returns HTTP `422`.
+   - If `since` is syntactically valid but is not present in the current filtered result set, treat it as an exclusive UUIDv7 boundary and return matching jobs older than that cursor. Do not return `422` solely because the cursor job is no longer present in the cache.
+
+5. **Ordering.**
+   - Results are ordered **newest-first** by UUIDv7 `job_id`.
+   - This supports the phone/watch inbox use case: newest proposals appear first.
+   - Because DRNT `job_id` values are UUIDv7, newest-first ordering is implemented as descending `job_id` string order.
+
+6. **`limit`.**
+   - Default: `50`.
+   - Minimum: `1`.
+   - Maximum: `200`.
+   - Values outside the range `[1, 200]` return HTTP `422`.
+
+7. **Response shape.**
+   - `GET /jobs` returns a wrapper object with the following shape:
+     ```json
+     {
+       "items": [JobStatusResponse, ...],
+       "next_cursor": "string | null",
+       "count": 0
+     }
+     ```
+   - `items` contains full `JobStatusResponse` objects, not stripped-down summaries.
+   - For `proposal_ready` jobs in `items`, `proposal` must be populated using the existing `JobManager.get_proposal` helper. The route must not duplicate proposal-derivation rules.
+   - `count` is the integer number of items returned in this response (i.e., `len(items)`).
+   - `next_cursor` is the `job_id` of the last returned item when more matching jobs remain after this page; otherwise `null`.
+
+8. **Pagination.**
+   - The server returns at most `limit` items per response.
+   - If more matching jobs exist after the returned page (under the locked newest-first ordering), `next_cursor` is set to the `job_id` of the last returned item; otherwise `next_cursor` is `null`.
+   - The client requests the next page by calling `GET /jobs?status={status}&since={next_cursor}&limit={n}`.
+   - Under newest-first ordering, the next page returns jobs older than `next_cursor`.
+   - When the client follows `next_cursor` faithfully, no job is duplicated across pages.
+
+9. **Data source for Phase 4A.2.e.**
+   - The listing endpoint is served from the `JobManager` in-memory job cache (`JobManager._jobs`).
+   - This means Phase 4A.2.e listing covers jobs currently retained by `JobManager`, including non-terminal jobs loaded on startup from SQLite into the in-memory cache.
+   - SQLite-backed terminal-job history listing is **out of scope** for Phase 4A.2.e.
+   - `orchestrator/persistence.py` must not be modified for this listing slice unless implementation proves the in-memory cache cannot satisfy AC #11/#12, in which case implementation stops for a new plan amendment.
+   - This narrows the Files-Likely-Affected note for `orchestrator/persistence.py` for the Phase 4A.2.e slice only; it does not retire that note for later phases.
+
+10. **Scope boundary.**
+    - This amendment does not implement code.
+    - This amendment does not wire `GET /jobs`.
+    - This amendment does not update `STATUS.md` or `docs/SPEC-MAP.md`.
+    - This amendment does not consolidate earlier plan amendments.
+    - `GET /jobs/{job_id}` behavior must remain unchanged by the listing implementation.
+    - `POST /jobs/{job_id}/review` behavior, `Proposal` shape, `ReviewRequest` shape, and the `human.reviewed` / `job.proposal_ready` / `job.closed_no_action` audit-event contracts are unchanged by this amendment.
+
+**Effect on existing acceptance criteria:**
+
+- AC #11 is unchanged in intent. This amendment locks the wrapper response shape (`items` / `next_cursor` / `count`) used to satisfy AC #11 and confirms that the response items are full `JobStatusResponse` objects with `proposal` populated for `proposal_ready` jobs via `JobManager.get_proposal`.
+- AC #12 is unchanged in intent. This amendment locks the `since` cursor as an exclusive UUIDv7 `job_id` cursor under newest-first ordering, the `next_cursor` field used for pagination, and the no-duplication guarantee that `since={next_cursor}` enforces.
+- AC #31 is unchanged. `GET /jobs` remains the only new listing route registered for Phase 4A; this amendment explicitly forbids any sibling listing route.
+- All other acceptance criteria remain unchanged.
+
+**Scope boundary for this amendment:**
+
+- This amendment does not implement code.
+- This amendment does not wire `GET /jobs`.
+- This amendment does not modify the schema (no new request or response models are added; the wrapper shape is described in this amendment and will be implemented in the next slice).
+- This amendment does not change `STATUS.md` or `docs/SPEC-MAP.md`.
+
+**Out of scope for this amendment:**
+
+- No endpoint wiring.
+- No `job_manager` listing-helper, ordering, or cursor implementation.
+- No `orchestrator/persistence.py` changes.
+- No SQLite-backed terminal-job history listing.
+- No persistence, audit-event implementation, `STATUS.md`, or `docs/SPEC-MAP.md` changes.
+- No tests are run or added by this amendment.
