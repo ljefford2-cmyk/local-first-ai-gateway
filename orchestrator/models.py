@@ -148,3 +148,9 @@ class Job:
     proposal_id: Optional[str] = None
     response_hash: Optional[str] = None
     confidence: Optional[float] = None
+    # Phase 4A.2.d: review-handler first-writer guard.
+    # Distinct from override_type. Closed value set:
+    #   approve | edit | reject | defer | decline_to_act
+    # Terminal/resolving decisions (approve/edit/reject/decline_to_act) close
+    # the proposal; defer leaves the job reviewable.
+    review_decision: Optional[str] = None

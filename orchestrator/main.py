@@ -33,6 +33,7 @@ from models import (
     JobStatusResponse,
     JobSubmitRequest,
     JobSubmitResponse,
+    ReviewRequest,
 )
 from pydantic import BaseModel
 from typing import Optional
@@ -542,6 +543,24 @@ async def hub_status():
         "seconds_since_heartbeat": _hub_state_manager.seconds_since_last_heartbeat(),
         "hostname": _hub_state_manager.hostname,
     }
+
+
+@app.post("/jobs/{job_id}/review")
+async def review_job(job_id: str, req: ReviewRequest):
+    if job_manager is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "not_ready", "detail": "Orchestrator not initialized"},
+        )
+    status_code, body = await job_manager.review_job(
+        job_id=job_id,
+        decision=req.decision.value,
+        result_id=req.result_id,
+        response_hash=req.response_hash,
+        decision_idempotency_key=req.decision_idempotency_key,
+        modified_result=req.modified_result,
+    )
+    return JSONResponse(status_code=status_code, content=body)
 
 
 @app.post("/jobs/{job_id}/override")

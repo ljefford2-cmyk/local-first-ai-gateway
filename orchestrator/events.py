@@ -567,6 +567,38 @@ def event_job_proposal_ready(
     )
 
 
+def event_job_closed_no_action(
+    job_id: str,
+    result_id: str,
+    response_hash: str,
+    review_decision: str,
+    decision_idempotency_key: str,
+    governing_capability_id: str | None,
+    reason: str,
+) -> dict[str, Any]:
+    """Build a job.closed_no_action event — durable lifecycle transition.
+
+    Emitted after a winning decline_to_act review decision is recorded and
+    before the review handler returns its final response. Records the
+    lifecycle transition into closed_no_action separately from
+    human.reviewed so the transition is durably attributable in the audit
+    log independently of the human.reviewed decision string.
+    """
+    return build_event(
+        event_type="job.closed_no_action",
+        job_id=job_id,
+        capability_id=governing_capability_id,
+        payload={
+            "result_id": result_id,
+            "response_hash": response_hash,
+            "review_decision": review_decision,
+            "decision_idempotency_key": decision_idempotency_key,
+            "governing_capability_id": governing_capability_id,
+            "reason": reason,
+        },
+    )
+
+
 def event_human_reviewed(
     job_id: str,
     decision: str,

@@ -31,6 +31,7 @@ from events import (
     event_human_override,
     event_human_reviewed,
     event_job_classified,
+    event_job_closed_no_action,
     event_job_delivered,
     event_job_dispatched,
     event_job_failed,
@@ -43,7 +44,16 @@ from events import (
     event_wal_permission_check,
 )
 from override_types import CONDITIONAL_DEMOTION_TYPES, TERMINAL_STATES, is_sentinel_failure
-from models import Job, JobStatus, Proposal
+from models import Job, JobStatus, Proposal, ReviewDecision
+
+# Phase 4A.2.d: terminal/resolving review decisions that close the proposal.
+# defer is non-terminal and does not close the proposal.
+_TERMINAL_REVIEW_DECISIONS = frozenset({
+    ReviewDecision.approve.value,
+    ReviewDecision.edit.value,
+    ReviewDecision.reject.value,
+    ReviewDecision.decline_to_act.value,
+})
 from permission_checker import JobContext, PermissionChecker
 from registry import EgressRegistry
 from worker_context import WorkerContext
@@ -287,9 +297,25 @@ class JobManager:
         if job.status in TERMINAL_STATES and job.status != JobStatus.delivered.value:
             return {"status": "no_op", "reason": "job_already_terminal", "job_id": job_id}
 
+        # Phase 4A.2.d: review/override serialization. If a terminal review
+        # decision has resolved the job, the override is a no-op (review
+        # wins first per Phase 4A.2.d rule 4).
+        if job.review_decision in _TERMINAL_REVIEW_DECISIONS:
+            return {"status": "no_op", "reason": "already_reviewed", "job_id": job_id}
+
         # Phase 5E: already-overridden guard — first override wins, second is no-op
         if job.override_type is not None:
             return {"status": "no_op", "reason": "already_overridden", "job_id": job_id}
+
+        # Phase 4A.2.d: proposal_ready first-writer guard. Set override_type
+        # before any durable human.override or terminal lifecycle event await
+        # so a concurrent review against the same proposal cannot pass its
+        # proposal_ready precondition once override has begun. The per-branch
+        # handlers below set the same value again at end-of-flow, which is a
+        # no-op rewrite. Limited to proposal_ready per plan scope.
+        if job.status == JobStatus.proposal_ready.value:
+            job.override_type = override_type
+            self._persist_job(job)
 
         pre_delivery = job.status in (
             JobStatus.submitted.value,
@@ -471,6 +497,400 @@ class JobManager:
             return result
 
         return {"status": "error", "reason": "unknown_override_type", "job_id": job_id}
+
+    # -- Phase 4A.2.d: review handler --
+
+    async def review_job(
+        self,
+        job_id: str,
+        decision: str,
+        result_id: str,
+        response_hash: str,
+        decision_idempotency_key: str,
+        modified_result: str | None = None,
+        device: str = "phone",
+    ) -> tuple[int, dict]:
+        """Handle POST /jobs/{job_id}/review per Phase 4A.2.c/d semantics.
+
+        Returns (status_code, body) so the HTTP route can faithfully replay
+        the same envelope on idempotency-key replay without re-running any
+        durable emit or state mutation.
+        """
+        # Build the payload identity used for idempotency comparison.
+        # Per Phase 4A.2.c rule 4 the identity includes job_id, decision,
+        # result_id, response_hash, modified_result, and the key itself.
+        payload_identity = {
+            "job_id": job_id,
+            "decision": decision,
+            "result_id": result_id,
+            "response_hash": response_hash,
+            "modified_result": modified_result,
+            "decision_idempotency_key": decision_idempotency_key,
+        }
+
+        # Phase 4A.2.c rule 2: idempotency replay BEFORE stale-decision checks.
+        existing = self._idempotency_store.get_review_outcome(
+            decision_idempotency_key,
+        )
+        if existing is not None:
+            if existing.payload_identity == payload_identity:
+                # Same key + same payload: replay original outcome without
+                # repeating state transitions or emitting duplicate events.
+                return (
+                    int(existing.outcome["status_code"]),
+                    existing.outcome["body"],
+                )
+            # Same key + different payload: 409, no mutation, no event.
+            return (
+                409,
+                {
+                    "error": "decision_idempotency_key_conflict",
+                    "message": (
+                        "decision_idempotency_key already used with a "
+                        "different review payload."
+                    ),
+                },
+            )
+
+        # Job lookup. An unknown job_id is a 404 — distinct from the
+        # wrong-status 409 path because there is no current_status to
+        # report.
+        job = self._jobs.get(job_id)
+        if job is None:
+            return (404, {"error": "job_not_found", "job_id": job_id})
+
+        # Phase 4A.2.c rule 1: review valid only when status == proposal_ready.
+        if job.status != JobStatus.proposal_ready.value:
+            return self._review_wrong_status_response(job)
+
+        # Phase 4A.2.d rule 4: review must reject when override has won first.
+        if job.override_type is not None:
+            return self._review_wrong_status_response(job)
+
+        # Phase 4A.2.c rule 2: stale-decision checks BEFORE any state
+        # mutation or durable review event when the key is unknown.
+        if (
+            job.result_id != result_id
+            or job.response_hash != response_hash
+        ):
+            return self._review_stale_response(job)
+
+        # Phase 4A.2.c rule 6: handler-side modified_result rule. 422 on
+        # violation. The schema admits modified_result as Optional[str]; the
+        # required-iff-edit constraint is enforced here.
+        if decision == ReviewDecision.edit.value:
+            if not isinstance(modified_result, str) or modified_result == "":
+                return (
+                    422,
+                    {
+                        "error": "modified_result_required",
+                        "message": (
+                            "modified_result is required when decision == 'edit'"
+                        ),
+                    },
+                )
+        else:
+            if modified_result is not None:
+                return (
+                    422,
+                    {
+                        "error": "modified_result_not_allowed",
+                        "message": (
+                            "modified_result must be absent or null when "
+                            f"decision == '{decision}'"
+                        ),
+                    },
+                )
+
+        # Per-decision branches.
+        if decision == ReviewDecision.approve.value:
+            return await self._review_approve(
+                job, payload_identity, decision_idempotency_key, device,
+            )
+        if decision == ReviewDecision.edit.value:
+            return await self._review_edit(
+                job,
+                payload_identity,
+                decision_idempotency_key,
+                modified_result,
+                device,
+            )
+        if decision == ReviewDecision.reject.value:
+            return await self._review_reject(
+                job, payload_identity, decision_idempotency_key, device,
+            )
+        if decision == ReviewDecision.defer.value:
+            return await self._review_defer(
+                job, payload_identity, decision_idempotency_key, device,
+            )
+        if decision == ReviewDecision.decline_to_act.value:
+            return await self._review_decline_to_act(
+                job, payload_identity, decision_idempotency_key, device,
+            )
+
+        # Unreachable when the route validates ReviewRequest.decision against
+        # the ReviewDecision enum, but kept for defensive completeness.
+        return (
+            422,
+            {"error": "unknown_decision", "decision": decision},
+        )
+
+    def _review_wrong_status_response(self, job: Job) -> tuple[int, dict]:
+        """Locked Phase 4A.2.c rule 1 wrong-status / current-status 409 body."""
+        return (
+            409,
+            {
+                "error": "wrong_status",
+                "current_status": job.status,
+                "current_result_id": job.result_id,
+                "current_response_hash": job.response_hash,
+                "message": (
+                    f"Review not permitted for job in status '{job.status}'; "
+                    "only proposal_ready jobs without an override are reviewable."
+                ),
+            },
+        )
+
+    def _review_stale_response(self, job: Job) -> tuple[int, dict]:
+        """Locked Phase 4A.2.c rule 2 stale-decision 409 body."""
+        return (
+            409,
+            {
+                "error": "stale_decision",
+                "current_status": job.status,
+                "current_result_id": job.result_id,
+                "current_response_hash": job.response_hash,
+                "message": (
+                    "Review request result_id/response_hash does not match "
+                    "the current authoritative proposal."
+                ),
+            },
+        )
+
+    async def _review_approve(
+        self,
+        job: Job,
+        payload_identity: dict,
+        decision_idempotency_key: str,
+        device: str,
+    ) -> tuple[int, dict]:
+        # Phase 4A.2.d rule 3: set first-writer guard before any durable emit.
+        job.review_decision = ReviewDecision.approve.value
+        self._persist_job(job)
+
+        reviewed_evt = event_human_reviewed(
+            job_id=job.job_id,
+            decision=ReviewDecision.approve.value,
+            device=device,
+            review_latency_ms=0,
+        )
+        await self._audit.emit_durable(reviewed_evt)
+
+        deliver_evt = event_job_delivered(job_id=job.job_id)
+        await self._audit.emit_durable(deliver_evt)
+
+        job.status = JobStatus.delivered.value
+        job.delivered_at = _now_iso()
+        self._persist_job(job)
+
+        body = {
+            "status": "delivered",
+            "job_id": job.job_id,
+            "decision": ReviewDecision.approve.value,
+            "result_id": job.result_id,
+            "response_hash": job.response_hash,
+        }
+        self._idempotency_store.store_review_outcome(
+            decision_idempotency_key,
+            payload_identity,
+            {"status_code": 200, "body": body},
+            applied=True,
+        )
+        return (200, body)
+
+    async def _review_edit(
+        self,
+        job: Job,
+        payload_identity: dict,
+        decision_idempotency_key: str,
+        modified_result: str,
+        device: str,
+    ) -> tuple[int, dict]:
+        # Phase 4A.2.d rule 3: set first-writer guard before any durable emit.
+        job.review_decision = ReviewDecision.edit.value
+        self._persist_job(job)
+
+        modified_result_id = _uuid7()
+        modified_result_hash = _sha256(modified_result)
+        _write_result(modified_result_id, modified_result)
+        derived_from_result_id = job.result_id
+
+        reviewed_evt = event_human_reviewed(
+            job_id=job.job_id,
+            decision=ReviewDecision.edit.value,
+            device=device,
+            review_latency_ms=0,
+            modified_result_id=modified_result_id,
+            modified_result_hash=modified_result_hash,
+            derived_from_result_id=derived_from_result_id,
+        )
+        await self._audit.emit_durable(reviewed_evt)
+
+        deliver_evt = event_job_delivered(job_id=job.job_id)
+        await self._audit.emit_durable(deliver_evt)
+
+        # Phase 4A.2.c rule 5: edit updates authoritative result identity to
+        # the modified artifact and transitions the job to delivered.
+        job.result = modified_result
+        job.result_id = modified_result_id
+        job.response_hash = modified_result_hash
+        job.status = JobStatus.delivered.value
+        job.delivered_at = _now_iso()
+        self._persist_job(job)
+
+        body = {
+            "status": "delivered",
+            "job_id": job.job_id,
+            "decision": ReviewDecision.edit.value,
+            "result_id": modified_result_id,
+            "response_hash": modified_result_hash,
+            "derived_from_result_id": derived_from_result_id,
+        }
+        self._idempotency_store.store_review_outcome(
+            decision_idempotency_key,
+            payload_identity,
+            {"status_code": 200, "body": body},
+            applied=True,
+        )
+        return (200, body)
+
+    async def _review_reject(
+        self,
+        job: Job,
+        payload_identity: dict,
+        decision_idempotency_key: str,
+        device: str,
+    ) -> tuple[int, dict]:
+        # Phase 4A.2.d rule 3: set first-writer guard before any durable emit.
+        job.review_decision = ReviewDecision.reject.value
+        self._persist_job(job)
+
+        reviewed_evt = event_human_reviewed(
+            job_id=job.job_id,
+            decision=ReviewDecision.reject.value,
+            device=device,
+            review_latency_ms=0,
+        )
+        await self._audit.emit_durable(reviewed_evt)
+
+        fail_evt = event_job_failed(
+            job_id=job.job_id,
+            error_class="review_reject",
+            detail="Rejected via review",
+            failing_capability_id=job.governing_capability_id,
+        )
+        await self._audit.emit_durable(fail_evt)
+
+        job.status = JobStatus.failed.value
+        job.error = "review_reject"
+        self._persist_job(job)
+
+        body = {
+            "status": "failed",
+            "job_id": job.job_id,
+            "decision": ReviewDecision.reject.value,
+            "result_id": job.result_id,
+            "response_hash": job.response_hash,
+        }
+        self._idempotency_store.store_review_outcome(
+            decision_idempotency_key,
+            payload_identity,
+            {"status_code": 200, "body": body},
+            applied=True,
+        )
+        return (200, body)
+
+    async def _review_defer(
+        self,
+        job: Job,
+        payload_identity: dict,
+        decision_idempotency_key: str,
+        device: str,
+    ) -> tuple[int, dict]:
+        # Phase 4A.2.d rule 3: defer is non-terminal — do NOT set
+        # review_decision. The job remains in proposal_ready and a later
+        # review with a fresh decision_idempotency_key is permitted. The
+        # defer decision itself is still recorded for idempotency replay.
+        reviewed_evt = event_human_reviewed(
+            job_id=job.job_id,
+            decision=ReviewDecision.defer.value,
+            device=device,
+            review_latency_ms=0,
+        )
+        await self._audit.emit_durable(reviewed_evt)
+
+        body = {
+            "status": "deferred",
+            "job_id": job.job_id,
+            "decision": ReviewDecision.defer.value,
+            "result_id": job.result_id,
+            "response_hash": job.response_hash,
+        }
+        self._idempotency_store.store_review_outcome(
+            decision_idempotency_key,
+            payload_identity,
+            {"status_code": 200, "body": body},
+            applied=True,
+        )
+        return (200, body)
+
+    async def _review_decline_to_act(
+        self,
+        job: Job,
+        payload_identity: dict,
+        decision_idempotency_key: str,
+        device: str,
+    ) -> tuple[int, dict]:
+        # Phase 4A.2.d rule 3: set first-writer guard before any durable emit.
+        job.review_decision = ReviewDecision.decline_to_act.value
+        # Persist the closed_no_action transition before durable awaits per
+        # plan: the lifecycle transition is part of the first-writer state.
+        job.status = JobStatus.closed_no_action.value
+        self._persist_job(job)
+
+        reviewed_evt = event_human_reviewed(
+            job_id=job.job_id,
+            decision=ReviewDecision.decline_to_act.value,
+            device=device,
+            review_latency_ms=0,
+        )
+        await self._audit.emit_durable(reviewed_evt)
+
+        closed_evt = event_job_closed_no_action(
+            job_id=job.job_id,
+            result_id=job.result_id,
+            response_hash=job.response_hash,
+            review_decision=ReviewDecision.decline_to_act.value,
+            decision_idempotency_key=decision_idempotency_key,
+            governing_capability_id=job.governing_capability_id,
+            reason="decline_to_act",
+        )
+        await self._audit.emit_durable(closed_evt)
+
+        body = {
+            "status": "closed_no_action",
+            "job_id": job.job_id,
+            "decision": ReviewDecision.decline_to_act.value,
+            "result_id": job.result_id,
+            "response_hash": job.response_hash,
+        }
+        self._idempotency_store.store_review_outcome(
+            decision_idempotency_key,
+            payload_identity,
+            {"status_code": 200, "body": body},
+            applied=True,
+        )
+        return (200, body)
 
     async def _spawn_successor(self, original_job: Job, target_capability_id: str) -> Job:
         """Create a successor job for a redirect override."""

@@ -40,6 +40,20 @@ DEFAULT_TTL_SECONDS = 604800
 # idempotency records and support efficient bulk queries.
 _KEY_PREFIX = "idem:"
 
+# Phase 4A.2.d: separate namespace prefix for review-decision idempotency
+# records, distinct from the submit-side ``idem:`` namespace.
+_REVIEW_KEY_PREFIX = "review_idem:"
+
+
+@dataclass
+class ReviewIdempotencyRecord:
+    """Stored review-decision outcome for replay protection."""
+
+    payload_identity: dict
+    outcome: dict
+    applied: bool
+    created_at: datetime
+
 
 class IdempotencyStore:
     """Thread-safe, TTL-based idempotency key store.
@@ -53,6 +67,7 @@ class IdempotencyStore:
 
     def __init__(self, db_path: str | None = None) -> None:
         self._records: dict[str, IdempotencyRecord] = {}
+        self._review_records: dict[str, ReviewIdempotencyRecord] = {}
         self._lock = threading.Lock()
         self._db: sqlite3.Connection | None = None
 
@@ -138,6 +153,24 @@ class IdempotencyStore:
                 )
         except Exception:
             logger.warning("Failed to load idempotency records from DB", exc_info=True)
+
+        # Phase 4A.2.d: load review-decision records from the same state table
+        try:
+            cursor = self._db.execute(
+                "SELECT key, value FROM state WHERE key LIKE ?",
+                (_REVIEW_KEY_PREFIX + "%",),
+            )
+            for row in cursor:
+                review_key = row[0][len(_REVIEW_KEY_PREFIX):]
+                data = json.loads(row[1])
+                self._review_records[review_key] = ReviewIdempotencyRecord(
+                    payload_identity=data["payload_identity"],
+                    outcome=data["outcome"],
+                    applied=data["applied"],
+                    created_at=datetime.fromisoformat(data["created_at"]),
+                )
+        except Exception:
+            logger.warning("Failed to load review idempotency records from DB", exc_info=True)
 
     def _db_write(self, idempotency_key: str, record: IdempotencyRecord) -> None:
         """Write-through a single record to SQLite.  Failures are logged
@@ -234,3 +267,59 @@ class IdempotencyStore:
     def __len__(self) -> int:
         with self._lock:
             return len(self._records)
+
+    # -- Phase 4A.2.d: review-decision idempotency -------------------------
+
+    def _db_write_review(
+        self, decision_idempotency_key: str, record: ReviewIdempotencyRecord,
+    ) -> None:
+        if self._db is None:
+            return
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            value = json.dumps({
+                "payload_identity": record.payload_identity,
+                "outcome": record.outcome,
+                "applied": record.applied,
+                "created_at": record.created_at.isoformat(),
+            })
+            self._db.execute(
+                "INSERT OR REPLACE INTO state (key, value, updated_at) VALUES (?, ?, ?)",
+                (_REVIEW_KEY_PREFIX + decision_idempotency_key, value, now),
+            )
+            self._db.commit()
+        except Exception:
+            logger.warning(
+                "DB write failed for review key %s", decision_idempotency_key, exc_info=True,
+            )
+
+    def store_review_outcome(
+        self,
+        decision_idempotency_key: str,
+        payload_identity: dict,
+        outcome: dict,
+        applied: bool,
+    ) -> ReviewIdempotencyRecord:
+        """Store a review-decision outcome under the review_idem namespace.
+
+        outcome stores the original HTTP response body and status-code
+        envelope needed to replay same-key/same-payload without reapplying
+        state transitions.
+        """
+        with self._lock:
+            record = ReviewIdempotencyRecord(
+                payload_identity=payload_identity,
+                outcome=outcome,
+                applied=applied,
+                created_at=datetime.now(timezone.utc),
+            )
+            self._review_records[decision_idempotency_key] = record
+            self._db_write_review(decision_idempotency_key, record)
+            return record
+
+    def get_review_outcome(
+        self, decision_idempotency_key: str,
+    ) -> Optional[ReviewIdempotencyRecord]:
+        """Look up a stored review-decision outcome by key. None if unknown."""
+        with self._lock:
+            return self._review_records.get(decision_idempotency_key)
