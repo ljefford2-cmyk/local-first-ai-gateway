@@ -38,3 +38,6 @@ Thumbs.db
 
 # Scratch / discovery artifacts
 .tmp/
+
+# Backups (live outside the working tree)
+open-webui-volume-backup-*.tar.gz
