@@ -420,6 +420,16 @@ class JobManager:
 
             already_delivered = job.status == JobStatus.delivered.value
 
+            # KI-2: set the first-writer guard before the first durable audit
+            # await — mirrors the proposal_ready pre-await set above and the
+            # review handlers. No await runs between the entry guard
+            # (`override_type is not None` check) and here, so concurrent modify
+            # callers serialize first-writer-wins; the later set in this branch
+            # is a no-op rewrite. `_persist_job` is synchronous (no await) and
+            # does not reopen the window.
+            job.override_type = "modify"
+            self._persist_job(job)
+
             # Emit human.override — durable
             override_evt = event_human_override(job_id, "modify", target, detail, device)
             await self._audit.emit_durable(override_evt)

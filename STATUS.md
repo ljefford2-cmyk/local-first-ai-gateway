@@ -298,9 +298,11 @@ The passing unit tests run against in-process Python objects with mocked I/O. `t
 
 ---
 
-### KI-2 — Modify-branch first-writer guard is not atomic across `await`s in `override_job` (TOCTOU) [KNOWN, UNFIXED] (Spec 5 row 5.3, 5.5)
+### KI-2 — Modify-branch first-writer guard is not atomic across `await`s in `override_job` (TOCTOU) [RESOLVED 2026-05-29] (Spec 5 row 5.3, 5.5)
 
-**Status:** Known, unfixed. Out of scope for this documentation consolidation pass — traced here only, with no runtime change made.
+**Resolution (2026-05-29):** Closed for the `modify` branch via Mechanism A (lock-free early guard-set). In `orchestrator/job_manager.py:override_job()`, the `modify` branch now sets `job.override_type = "modify"` — followed by a synchronous `_persist_job(job)` — immediately after modify validation and *before* the first durable `human.override` emit, mirroring the `proposal_ready` pre-`await` set and the review handlers. Because no `await` runs between the entry guard (`if job.override_type is not None`) and this set, concurrent `override_job(..., "modify", ...)` calls on one `job_id` serialize first-writer-wins: the loser returns `no_op / already_overridden` and emits no durable events. Durable emit order is unchanged (`human.override → human.reviewed → job.delivered`); no schema, `confidence`, or audit-event-shape change was made, and the later `job.override_type = "modify"` assignment is retained as a no-op rewrite. Verified by `test_modify_concurrent_first_writer_wins_response_received`, `test_modify_concurrent_first_writer_wins_delivered`, and `test_modify_sets_override_type_before_first_durable_emit` in `tests/test_phase5d.py` (red-green: the concurrency tests fail on the pre-fix code — both callers win — and pass after the guard-set). **Scope: `modify` branch only** — the sibling `cancel`/`redirect`/`escalate` late-guard races on non-`proposal_ready` states are tracked separately as KI-3. The historical analysis below is retained as audit trail.
+
+**Status:** Resolved 2026-05-29 for the `modify` branch in this build cycle. Scope is the `modify` branch only; sibling override branches are tracked as KI-3. The analysis below is the original KI-2 entry, retained for audit trail.
 
 **Concern:** In `orchestrator/job_manager.py:override_job()`, the `modify` branch sets the first-override-wins guard `job.override_type = "modify"` only *after* awaiting two durable audit emits (`human.override`, then `human.reviewed`) and writing the modified-result artifact. The entry-time guard `if job.override_type is not None: return no_op` is therefore a time-of-check separated from the time-of-use by `await` points. Because `asyncio` can interleave at each `await`, two concurrent `override_job(..., "modify", ...)` calls against the same *delivered* job can both pass the entry guard and proceed, producing duplicate `human.reviewed` lineage and racing result writes (a TOCTOU race).
 
@@ -308,7 +310,19 @@ The passing unit tests run against in-process Python objects with mocked I/O. `t
 
 **Scope of impact:** The system targets single-user, trusted-local operation with human-initiated overrides, which makes concurrent same-job modify calls unlikely in practice — the reason this is tracked rather than treated as an active defect. The audit hash chain still records every emit; the race affects which modified artifact wins and whether duplicate `human.reviewed` events appear, not chain integrity.
 
-**Fix path (not part of this pass):** set `override_type` (or a dedicated in-progress guard) before the first `await` in the delivered `modify` path, mirroring the `proposal_ready` pre-`await` set, or serialize per-job override handling. No code is changed here.
+**Fix path (implemented 2026-05-29):** set `override_type` before the first `await` in the `modify` path, mirroring the `proposal_ready` pre-`await` set — done via Mechanism A (see Resolution above). The per-job override-serialization alternative was not needed for the `modify` branch.
+
+---
+
+### KI-3 — `cancel`/`redirect`/`escalate` late-guard TOCTOU on non-`proposal_ready` states [KNOWN, UNFIXED] (Spec 5 row 5.3, 5.5)
+
+**Status:** Known, unfixed. Surfaced by the KI-2 Part 1 discovery; deliberately out of scope for the KI-2 fix, which was scoped to the `modify` branch.
+
+**Concern:** In `orchestrator/job_manager.py:override_job()`, the `cancel` (pre-delivery and delivered paths), `redirect` (pre-delivery and delivered paths), and `escalate` branches set `job.override_type` only *after* their durable emits. On the non-`proposal_ready` states they operate on (the pre-delivery states, `response_received`, and `delivered`), they are not covered by the `proposal_ready` pre-`await` set, so the same TOCTOU exists: a second concurrent override caller can pass the entry guard during those emits and double-apply, or apply a conflicting `override_type` / terminal state. The KI-2 `modify`-branch fix does **not** close these — it prevents only modify-as-first-writer and modify-vs-modify. The KI-2 tests must not be read as whole-override serialization.
+
+**Scope of impact:** As with KI-2, single-user trusted-local operation with human-initiated overrides makes concurrent same-job overrides unlikely in practice, hence tracked rather than treated as an active defect. The audit hash chain still records every emit; the race affects which override wins and whether duplicate override/lifecycle events appear, not chain integrity.
+
+**Fix path (future Elevated cycle):** extend the early-guard pattern to the `cancel`/`redirect`/`escalate` branches (each setting `override_type` before its first durable emit), or introduce a per-job override-serialization primitive covering all branches and the review path. The audit-ordering invariants must be preserved exactly, as in KI-2.
 
 ---
 

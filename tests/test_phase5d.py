@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import sys
 import os
@@ -544,3 +545,214 @@ async def test_no_demotion_on_modify_and_escalate():
 
     demoted_after_escalate = audit.get_events_by_type("wal.demoted")
     assert len(demoted_after_escalate) == 0
+
+
+# ---------- KI-2: modify-branch first-writer TOCTOU ----------
+#
+# These tests pin the fix for KI-2: the modify branch must set its first-writer
+# guard (job.override_type = "modify") before the first durable human.override
+# emit, so concurrent modify callers on one job_id serialize first-writer-wins.
+# The concurrency tests are red-green: they FAIL on unpatched HEAD (the guard is
+# set only after two durable emits, so a second caller slips through and a second
+# override chain is laundered into the audit log) and PASS after the early
+# guard-set. See docs/plans/ki-2-modify-toctou.md.
+
+
+class _GatedHumanOverrideAudit(MockAuditClient):
+    """Audit spy that parks the FIRST human.override emit on a real await.
+
+    MockAuditClient.emit_durable does not suspend, so two override_job
+    coroutines run together would otherwise complete one-after-another and
+    never interleave — a naive concurrency test would pass even against the
+    racy code. This spy introduces a genuine suspension point at the first
+    human.override emit: writer A parks there (still inside the modify branch,
+    before it has emitted human.reviewed) so a second concurrent caller can
+    reach the entry guard while A is mid-flight.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.first_override_reached = asyncio.Event()
+        self.release = asyncio.Event()
+        self._override_seen = 0
+
+    async def emit_durable(self, event: dict) -> bool:
+        if event.get("event_type") == "human.override":
+            self._override_seen += 1
+            if self._override_seen == 1:
+                self.first_override_reached.set()
+                await self.release.wait()
+        return await super().emit_durable(event)
+
+
+class _OverrideTypeObservingAudit(MockAuditClient):
+    """Audit spy that snapshots job.override_type at each emit (no suspension).
+
+    Bound to the manager's job dict after construction so it can observe the
+    guard state at the moment each durable event is emitted.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._jobs: dict = {}
+        self._job_id: str | None = None
+        self.override_type_at_emit: list[tuple[str, str | None]] = []
+
+    def bind(self, jobs: dict, job_id: str) -> None:
+        self._jobs = jobs
+        self._job_id = job_id
+
+    async def emit_durable(self, event: dict) -> bool:
+        job = self._jobs.get(self._job_id)
+        ot = job.override_type if job else None
+        self.override_type_at_emit.append((event.get("event_type"), ot))
+        return await super().emit_durable(event)
+
+
+@pytest.mark.asyncio
+async def test_modify_concurrent_first_writer_wins_response_received():
+    """Two concurrent modify calls on one response_received job: exactly one
+    wins ('modified'), the other is a no_op/already_overridden, and only the
+    winner's three-event chain is emitted (no laundered second override)."""
+    audit = _GatedHumanOverrideAudit()
+    jm = _make_manager(audit)
+
+    job = _make_job(
+        status=JobStatus.response_received.value,
+        result="Original model response",
+        result_id="orig-result-conc-rr",
+    )
+    jm._jobs[job.job_id] = job
+
+    with patch("job_manager._write_result") as mock_write:
+        # Writer A enters and parks at its first human.override emit.
+        task_a = asyncio.create_task(
+            jm.override_job(
+                job_id=job.job_id,
+                override_type="modify",
+                target="response",
+                detail="A edit",
+                device="phone",
+                modified_result="A corrected response",
+            )
+        )
+        await audit.first_override_reached.wait()
+
+        # Writer B runs the entry guard while A is mid-modify.
+        result_b = await jm.override_job(
+            job_id=job.job_id,
+            override_type="modify",
+            target="response",
+            detail="B edit",
+            device="phone",
+            modified_result="B corrected response",
+        )
+
+        # Let A finish.
+        audit.release.set()
+        result_a = await task_a
+
+    statuses = sorted([result_a["status"], result_b["status"]])
+    assert statuses == ["modified", "no_op"], (result_a, result_b)
+
+    loser = result_a if result_a["status"] == "no_op" else result_b
+    assert loser["reason"] == "already_overridden"
+
+    # Exactly one override chain — no laundered second override.
+    assert [e["event_type"] for e in audit.events] == [
+        "human.override",
+        "human.reviewed",
+        "job.delivered",
+    ]
+    # Only one modified-result artifact written.
+    assert mock_write.call_count == 1
+    assert job.override_type == "modify"
+    assert job.status == JobStatus.delivered.value
+
+
+@pytest.mark.asyncio
+async def test_modify_concurrent_first_writer_wins_delivered():
+    """Same race on a delivered job: winner emits exactly human.override and
+    human.reviewed (no job.delivered); loser is a no_op and emits nothing."""
+    audit = _GatedHumanOverrideAudit()
+    jm = _make_manager(audit)
+
+    job = _make_job(
+        status=JobStatus.delivered.value,
+        result="Original delivered response",
+        result_id="orig-result-conc-del",
+    )
+    job.delivered_at = "2026-04-03T00:01:00.000000Z"
+    jm._jobs[job.job_id] = job
+
+    with patch("job_manager._write_result") as mock_write:
+        task_a = asyncio.create_task(
+            jm.override_job(
+                job_id=job.job_id,
+                override_type="modify",
+                target="response",
+                detail="A edit",
+                device="phone",
+                modified_result="A edit text",
+            )
+        )
+        await audit.first_override_reached.wait()
+
+        result_b = await jm.override_job(
+            job_id=job.job_id,
+            override_type="modify",
+            target="response",
+            detail="B edit",
+            device="watch",
+            modified_result="B edit text",
+        )
+
+        audit.release.set()
+        result_a = await task_a
+
+    statuses = sorted([result_a["status"], result_b["status"]])
+    assert statuses == ["modified", "no_op"], (result_a, result_b)
+
+    loser = result_a if result_a["status"] == "no_op" else result_b
+    assert loser["reason"] == "already_overridden"
+
+    assert [e["event_type"] for e in audit.events] == [
+        "human.override",
+        "human.reviewed",
+    ]
+    assert audit.get_events_by_type("job.delivered") == []
+    assert mock_write.call_count == 1
+    assert job.status == JobStatus.delivered.value
+
+
+@pytest.mark.asyncio
+async def test_modify_sets_override_type_before_first_durable_emit():
+    """The modify first-writer guard must be set before the first durable emit.
+    RED on unpatched HEAD (override_type is None at human.override); GREEN after
+    the early guard-set."""
+    audit = _OverrideTypeObservingAudit()
+    jm = _make_manager(audit)
+
+    job = _make_job(
+        status=JobStatus.response_received.value,
+        result="Original model response",
+        result_id="orig-result-guard",
+    )
+    jm._jobs[job.job_id] = job
+    audit.bind(jm._jobs, job.job_id)
+
+    with patch("job_manager._write_result"):
+        await jm.override_job(
+            job_id=job.job_id,
+            override_type="modify",
+            target="response",
+            detail="Fixed grammar",
+            device="phone",
+            modified_result="Corrected model response",
+        )
+
+    override_observations = [
+        ot for (etype, ot) in audit.override_type_at_emit
+        if etype == "human.override"
+    ]
+    assert override_observations == ["modify"], audit.override_type_at_emit
