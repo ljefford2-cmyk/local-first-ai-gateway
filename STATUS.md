@@ -312,15 +312,21 @@ The passing unit tests run against in-process Python objects with mocked I/O. `t
 
 ---
 
-### Carry-Forward / Pending Review — hard-coded `confidence=1.0` on redirect/escalate successor jobs [PENDING REVIEW] (Spec 5 rows 5.2, 5.4)
+### Carry-Forward / Resolved — hard-coded `confidence=1.0` on redirect/escalate successor jobs [RESOLVED — Rule A (v1)] (Spec 5 rows 5.2, 5.4)
 
-**Status:** Unreviewed design decision awaiting authorization, not a confirmed defect. Traced here only; no runtime change made in this pass.
+**Status:** Resolved for v1 under Rule A. Documentation-only resolution; no runtime change made in this pass.
 
-**Observation:** `orchestrator/job_manager.py:_spawn_successor()` stamps every successor job with `confidence=1.0` — on the `Job` object and in the emitted `job.classified` event — for both the `redirect` and `escalate` override paths. This encodes "human-directed classification": a human explicitly chose the successor's route, so the classification-confidence field is set to its maximum rather than being derived from the local classifier.
+**Observation (unchanged):** `orchestrator/job_manager.py:_spawn_successor()` stamps every successor job with `confidence=1.0` — on the `Job` object and in the emitted `job.classified` event — for both the `redirect` and `escalate` override paths. A human explicitly chose the successor's route, so the field encodes a human-directed routing decision rather than a classifier-derived score.
 
-**Open question for review:** whether recording `confidence=1.0` for a human-directed successor is the intended semantics, or whether such successors should instead carry a null/sentinel confidence (or a distinct provenance marker) so downstream consumers can distinguish model-derived confidence from human-directed routing.
+**Resolution — Rule A (v1):** Human-directed redirect/escalate successors **retain `confidence=1.0`**, recorded as human-directed successor-classification confidence (not classifier-derived). This is the gateway implementation of the canonical Spec 5 successor-provenance clarification.
 
-**Disposition:** No change in this pass. This is an unreviewed design decision awaiting authorization, not a confirmed defect; any change to successor-job confidence requires explicit authorization first.
+**Confidence is excluded from WAL trust scoring** (standing doctrine; see canonical Spec 2 §9.5). Verified against the current working tree: no WAL/permission/promotion/demotion/decay path reads `confidence`. The trust-scoring modules — `permission_checker.py`, `demotion_engine.py`, `promotion_monitor.py`, `decay_evaluator.py` — contain no reference to the field; the only production reads of `confidence` are the classifier (which produces it), audit-event payload assembly (`job.classified`, `job.proposal_ready`), and Agent Inbox proposal derivation (`job_manager.py:get_proposal`). WAL promotion, demotion, and decay run on evaluable-outcome dispositions, failure counts, and activity windows.
+
+**Residual audit limitation (accepted for v1):** the `job.classified` payload is not self-describing on confidence provenance. Provenance is recoverable through successor lineage: the successor carries `parent_job_id` (set in `_spawn_successor`), joined to the durable `human.override` (`redirect`/`escalate`) and, on the post-delivery supersede path, the `job.revoked` (`successor_job_id`) chain. This preserves DRNT's core objective: consequential actions remain reconstructable from the audit trail — here via lineage rather than a self-describing payload.
+
+**Rule B (deferred — not a WAL-safety requirement):** a future `confidence_source` field on `job.classified` would make the event self-describing, but it is an audit-usability improvement, not a safety fix. It requires an Elevated cross-repo schema cycle: Spec 1 / Event Schema delta + Spec 5 successor-semantics clarification + Spec 2 guardrail (confidence provenance is audit/proposal metadata, never a WAL trust input) + gateway implementation and tests. **Re-open trigger:** promote to scheduled work only if audit ambiguity begins interfering with enterprise explanation, review UX, or a compliance evidence requirement.
+
+**Canonical reference:** Doctrine landed in `local-first-ai-orchestration` at `06e82cd23c7a8786c9327fa23bd4fcc92bc34ec5` (Spec 2 §9.5 WAL-exclusion doctrine; Spec 5 §3 successor provenance).
 
 ---
 
