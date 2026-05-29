@@ -33,6 +33,8 @@ The implication extends beyond this project. The local model's value is not that
 
 ## Specifications Implemented
 
+The seven canonical DRNT orchestration specifications (1–7) define the runtime. They live in the [local-first-ai-orchestration](https://github.com/ljefford2-cmyk/local-first-ai-orchestration) specs repo and are implemented here:
+
 | Spec | Name |
 |------|------|
 | 1 | Audit/Event Schema |
@@ -42,7 +44,12 @@ The implication extends beyond this project. The local model's value is not that
 | 5 | Override Semantics |
 | 6 | Silo Runtime Security |
 | 7 | Signal Chain Resilience |
-| 8 | Managed Build Workflow |
+
+**Spec 8 (Managed Build Workflow) is not one of the seven canonical orchestration specs.** It is a gateway-local *process* specification — it governs DRNT's own development workflow (planning, building, verifying, reviewing) and has no runtime modules, config, or tests. It exists only in this repo at [`docs/SPEC-8-MANAGED-BUILD-WORKFLOW.md`](docs/SPEC-8-MANAGED-BUILD-WORKFLOW.md); see [`docs/SPEC-MAP.md`](docs/SPEC-MAP.md) for the spec-to-implementation mapping.
+
+## Phase 4A.2 — Agent Proposal / Review Surface (backend contract)
+
+Phase 4A.2 adds the gateway-side backend contract for a governed, human-in-the-loop approval loop. This surface is HTTP-, schema-, and audit-shaped only — there is **no** native iOS/Watch client, push delivery, or Spec 9 orchestration in this repo. A job that is held for human review surfaces as the non-terminal `proposal_ready` status, is enumerable through a paginated, `status`-filtered `GET /jobs`, and is resolved through `POST /jobs/{job_id}/review` with an idempotent review decision (`approve`, `edit`, `reject`, `defer`, `decline_to_act`) guarded against concurrent override. See [`STATUS.md`](STATUS.md) §"Phase 4A — Mobile Agent Command Harness (Backend Contract)" for per-claim status and [`docs/SPEC-MAP.md`](docs/SPEC-MAP.md) for the endpoint/model/event map.
 
 ## Services
 

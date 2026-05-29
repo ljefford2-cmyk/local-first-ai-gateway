@@ -1,7 +1,9 @@
 # DRNT Gateway — Claim-Status-Evidence Matrix
 
 **Version:** v0.2.1
-**Generated:** 2026-04-18
+**Originally generated:** 2026-04-18
+**Last documentation update:** 2026-05-29 (public-surface consolidation pass)
+**Note on currency:** "Originally generated" is the date the Spec 1–7 matrix was first produced. It is *not* the complete current truth for everything below. The entire "Phase 4A — Mobile Agent Command Harness" section and rows 4A.1–4A.25 were added on 2026-04-26 (commits `7bd5df5`, `eff74ee`, `8b3946e`, `6ed818f`, `cca7027`), and the test-count figures in the Test Coverage Summary and the closing summary were re-measured from the working tree on 2026-05-29 (the commands used are shown in those sections). Where a dated sub-entry conflicts with the top-level generation date, the dated sub-entry is authoritative.
 **Purpose:** Map every architectural claim to its actual implementation status and evidence. This document exists because the four-model adversarial review (April 2026) converged on a single finding: the governance language is more mature than the runtime, and the public narrative risks outrunning implementation completeness.
 
 **Status definitions:**
@@ -267,7 +269,14 @@ Phase 4A.2 establishes the gateway-side backend contract for the governed Agent 
 | Phase 4A (Mobile Agent Command Harness — Backend Contract) | `test_phase4a_backend_contract.py`, `test_phase4a_proposal_population.py`, `test_phase4a_review_endpoint.py`, `test_phase4a_jobs_listing.py` | Unit (TestClient + mocked dependencies) |
 | **Total** | **42 test files** | |
 
-**Test taxonomy note:** Tests are collected across 42 test files (32 under `tests/`, 9 under `orchestrator/`, 1 under `audit-log-writer/tests/`). Pre-Phase-4A run snapshot: 772 collected, 740 passed, 27 skipped, 5 failed — every failure is in `tests/test_e2e_v02.py` and requires the Docker Compose stack to be running. The passing tests run against in-process Python objects with mocked I/O. `test_integration_e2e.py` tests the FastAPI app with `TestClient` against mocked backends — integration-level but not end-to-end in the operational sense. Phase 4A backend contract is exercised by 83 focused tests across the four new test files: `test_phase4a_backend_contract.py` (23), `test_phase4a_proposal_population.py` (13), `test_phase4a_review_endpoint.py` (28), `test_phase4a_jobs_listing.py` (19); these tests were added by commits `7bd5df5`, `eff74ee`, `8b3946e`, and `6ed818f` and run against in-process Python objects with mocked I/O (no real audit socket, no real Docker, no real cloud egress).
+**Test taxonomy note (these are distinct denominators — do not conflate one with another):**
+
+- **Total test files — measured 2026-05-29:** 42, via `find . -name 'test_*.py' -not -path './.git/*' -not -path './.claude/worktrees/*' -not -path '*/.pytest_cache/*' | sort | wc -l`. Breakdown: 32 under `tests/`, 9 under `orchestrator/`, 1 under `audit-log-writer/tests/`. (A naive `find` that does not exclude `.claude/worktrees/` reports ~840 because roughly twenty git worktrees each carry a full copy of the test tree; those copies are not part of this repo's test surface.)
+- **Total collected tests — measured 2026-05-29:** 881, via `python -m pytest tests/ orchestrator/ audit-log-writer/tests/ --collect-only -q` (collection only — the suite was **not** executed in this pass, so current passed/skipped/failed counts are not claimed). Collection is scoped to the three real test roots because the repo root defines no `testpaths` and an unscoped collect-only errors on duplicate basenames from the worktree copies.
+- **Phase 4A focused subset:** 83 tests across the four Phase 4A files — `test_phase4a_backend_contract.py` (23), `test_phase4a_proposal_population.py` (13), `test_phase4a_review_endpoint.py` (28), `test_phase4a_jobs_listing.py` (19), added by commits `7bd5df5`, `eff74ee`, `8b3946e`, `6ed818f`. This is a subset of the 881 collected tests, **not** a separate full-suite denominator.
+- **Historical pre-Phase-4A run snapshot — NOT re-measured, retained for audit trail:** 38 test files / 772 collected / 740 passed / 27 skipped / 5 failed, where every failure was in `tests/test_e2e_v02.py` and required the Docker Compose stack to be running. This snapshot predates the Phase 4A files; for current file and collection totals it is superseded by the measured figures above.
+
+The passing unit tests run against in-process Python objects with mocked I/O. `test_integration_e2e.py` exercises the FastAPI app with `TestClient` against mocked backends — integration-level but not end-to-end in the operational sense. The four Phase 4A files likewise run against in-process objects with mocked I/O (no real audit socket, no real Docker, no real cloud egress).
 
 ---
 
@@ -289,6 +298,32 @@ Phase 4A.2 establishes the gateway-side backend contract for the governed Agent 
 
 ---
 
+### KI-2 — Modify-branch first-writer guard is not atomic across `await`s in `override_job` (TOCTOU) [KNOWN, UNFIXED] (Spec 5 row 5.3, 5.5)
+
+**Status:** Known, unfixed. Out of scope for this documentation consolidation pass — traced here only, with no runtime change made.
+
+**Concern:** In `orchestrator/job_manager.py:override_job()`, the `modify` branch sets the first-override-wins guard `job.override_type = "modify"` only *after* awaiting two durable audit emits (`human.override`, then `human.reviewed`) and writing the modified-result artifact. The entry-time guard `if job.override_type is not None: return no_op` is therefore a time-of-check separated from the time-of-use by `await` points. Because `asyncio` can interleave at each `await`, two concurrent `override_job(..., "modify", ...)` calls against the same *delivered* job can both pass the entry guard and proceed, producing duplicate `human.reviewed` lineage and racing result writes (a TOCTOU race).
+
+**Why the `proposal_ready` path is not exposed the same way:** for `status == proposal_ready`, `override_job` sets `override_type` *before* any `await` (the Phase 4A.2.d first-writer pre-set), which closes the window for that status. That pre-`await` set is intentionally scoped to `proposal_ready`; the delivered `modify` path retains the late set.
+
+**Scope of impact:** The system targets single-user, trusted-local operation with human-initiated overrides, which makes concurrent same-job modify calls unlikely in practice — the reason this is tracked rather than treated as an active defect. The audit hash chain still records every emit; the race affects which modified artifact wins and whether duplicate `human.reviewed` events appear, not chain integrity.
+
+**Fix path (not part of this pass):** set `override_type` (or a dedicated in-progress guard) before the first `await` in the delivered `modify` path, mirroring the `proposal_ready` pre-`await` set, or serialize per-job override handling. No code is changed here.
+
+---
+
+### Carry-Forward / Pending Review — hard-coded `confidence=1.0` on redirect/escalate successor jobs [PENDING REVIEW] (Spec 5 rows 5.2, 5.4)
+
+**Status:** Unreviewed design decision awaiting authorization, not a confirmed defect. Traced here only; no runtime change made in this pass.
+
+**Observation:** `orchestrator/job_manager.py:_spawn_successor()` stamps every successor job with `confidence=1.0` — on the `Job` object and in the emitted `job.classified` event — for both the `redirect` and `escalate` override paths. This encodes "human-directed classification": a human explicitly chose the successor's route, so the classification-confidence field is set to its maximum rather than being derived from the local classifier.
+
+**Open question for review:** whether recording `confidence=1.0` for a human-directed successor is the intended semantics, or whether such successors should instead carry a null/sentinel confidence (or a distinct provenance marker) so downstream consumers can distinguish model-derived confidence from human-directed routing.
+
+**Disposition:** No change in this pass. This is an unreviewed design decision awaiting authorization, not a confirmed defect; any change to successor-job confidence requires explicit authorization first.
+
+---
+
 ## Summary: What V1 Actually Is
 
-V1 control-plane and execution-plane implementation. All seven specifications are implemented with test coverage across 38 test files (latest run: 772 collected, 740 passed, 27 skipped, 5 e2e-only failures when the Docker Compose stack is not running). The execution plane creates worker containers with file-based I/O through a Docker-socket-isolated `worker-proxy` sidecar that enforces a field-level default-deny allowlist plus an image/network/volume/resource registry on its HTTP boundary (Phase 2B). Job state, idempotency store, circuit breaker state, and hub state are persisted to SQLite with write-through caching. ConnectivityMonitor gates cloud dispatch via circuit breaker. Runtime seccomp enforcement is now verified for the worker path via the fixed-contract probe described in row 4.9 and KI-1.
+V1 control-plane and execution-plane implementation. All seven specifications are implemented with test coverage across 42 test files (measured from the working tree on 2026-05-29; 881 tests collected via `python -m pytest tests/ orchestrator/ audit-log-writer/tests/ --collect-only -q`). The full suite was not executed in this documentation pass, so current pass/skip/fail figures are not asserted here; the historical pre-Phase-4A run snapshot (38 files / 772 collected / 740 passed / 27 skipped / 5 e2e-only failures when the Docker Compose stack is not running) is retained in the Test Coverage Summary for audit trail only. The execution plane creates worker containers with file-based I/O through a Docker-socket-isolated `worker-proxy` sidecar that enforces a field-level default-deny allowlist plus an image/network/volume/resource registry on its HTTP boundary (Phase 2B). Job state, idempotency store, circuit breaker state, and hub state are persisted to SQLite with write-through caching. ConnectivityMonitor gates cloud dispatch via circuit breaker. Runtime seccomp enforcement is now verified for the worker path via the fixed-contract probe described in row 4.9 and KI-1.

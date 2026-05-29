@@ -14,7 +14,17 @@ For per-claim detail, see [STATUS.md](../STATUS.md).
 | **5 -- Override Semantics** | `orchestrator` | `permission_checker.py`, `demotion_engine.py`, `promotion_monitor.py`, `override_types.py`, `capability_state.py`, `capability_registry.py` | `config/capabilities.json` (`action_policies`, `promotion_criteria` sections) | `tests/test_phase5a.py` -- `test_phase5e.py`, `orchestrator/test_permission_checker.py`, `orchestrator/test_demotion_engine.py`, `orchestrator/test_promotion_monitor.py`, `orchestrator/test_capability_registry.py`, `orchestrator/test_banked_items.py` | Largest spec by test count; WAL levels gate autonomy |
 | **6 -- Silo Runtime Security** | `orchestrator` + `worker-proxy` + `worker` | **orchestrator:** `runtime_manifest.py`, `manifest_validator.py`, `blueprint_engine.py`, `sandbox_blueprint.py`, `egress_proxy.py`, `worker_lifecycle.py`, `worker_context.py`, `worker_executor.py`, `startup_validator.py` | `config/seccomp-default.json` | `tests/test_phase6a.py` -- `test_phase6e.py`, `tests/test_worker_executor.py`, `tests/test_worker_proxy.py` | **worker-proxy:** `worker-proxy/main.py`, `worker-proxy/models.py`; **worker:** `worker/worker_agent.py`, `worker/Dockerfile`; test_phase6c/6d shared with Spec 4 |
 | **7 -- Signal Chain Resilience** | `orchestrator` | `events.py`, `idempotency_store.py`, `connectivity_monitor.py`, `stale_recovery.py`, `decay_evaluator.py`, `hub_state.py` | None (behavioral, not config-driven) | `tests/test_spec7a_events.py` -- `test_spec7f_hub_state.py` | Six sub-specs (7A--7F), each with its own test file |
-| **8 -- Managed Build Workflow** | — (process spec) | `docs/SPEC-8-MANAGED-BUILD-WORKFLOW.md`, `docs/plans/`, `docs/reports/` | None | None | Governs development workflow; see spec document |
+| **8 -- Managed Build Workflow** | — (process spec) | `docs/SPEC-8-MANAGED-BUILD-WORKFLOW.md`, `docs/plans/`, `docs/reports/` | None | None | Gateway-local **process** spec — governs the development workflow only. **Not** one of the seven canonical orchestration specs; it has no runtime modules, config, or tests (the entries here are documents, not code). See spec document. |
+
+### Naming note — `worker-proxy` is not the "worker egress proxy"
+
+Spec 6 involves three similarly named things that play different roles. They share only the word "proxy"; keep them distinct:
+
+- **`worker-proxy` (service, v0.2 — present):** the Docker-socket **lifecycle** sidecar and container-creation boundary. It is the sole holder of the Docker socket; the orchestrator asks it over HTTP to create / start / wait-on / remove one-shot worker containers, and it enforces the image/network/volume/resource allowlist (`config/worker-proxy-registry.json`) plus a field-level default-deny before the socket is touched. It is **not** a request/response proxy for worker network traffic.
+- **`egress_proxy.py` (orchestrator module, v0.2 — present):** the per-worker **code-level** egress *authorization* gate (`EgressProxy.authorize()` allowlist). It decides whether a dispatch is permitted; it is not a network device and does not intercept packets.
+- **"worker egress proxy" / network-level egress enforcement (Spec 6, aspirational — v0.3+):** a future **request-level** outbound proxy / sanitizer (e.g. iptables rules or an Envoy sidecar per worker) that would intercept and filter actual worker network traffic. This does not exist in v0.2. See [THREAT-MODEL.md](../THREAT-MODEL.md) item 6 ("Network-level egress enforcement").
+
+The `worker-proxy` lifecycle sidecar (container creation boundary) and the aspirational worker egress proxy (request-level outbound path) are intentionally **different roles** despite the similar names.
 
 ## Cross-Cutting
 
