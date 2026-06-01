@@ -160,3 +160,11 @@ class Job:
     # Terminal/resolving decisions (approve/edit/reject/decline_to_act) close
     # the proposal; defer leaves the job reviewable.
     review_decision: Optional[str] = None
+    # §6B-1: mobile source-event lineage. client_source + client_source_event_id
+    # form the durable source-event identity; client_timestamp is lineage-only
+    # (NOT part of the intent hash); intent_equivalence_hash is computed over the
+    # normalized raw_input + input_modality at submit time.
+    client_source: Optional[str] = None
+    client_source_event_id: Optional[str] = None
+    client_timestamp: Optional[str] = None
+    intent_equivalence_hash: Optional[str] = None

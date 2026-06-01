@@ -27,7 +27,11 @@ from capability_state import CapabilityStateManager
 from context_packager import ContextPackager, SensitivityConfig
 from demotion_engine import DemotionEngine
 from hub_state import HubState, HubStateManager
-from job_manager import JobManager
+from job_manager import (
+    JobManager,
+    SourceEventConsistencyPending,
+    SourceEventIntentConflict,
+)
 from models import (
     HealthResponse,
     JobListResponse,
@@ -409,7 +413,18 @@ async def submit_job(req: JobSubmitRequest):
             input_modality=req.input_modality.value,
             device=req.device.value,
             idempotency_key=req.idempotency_key,
+            client_source=req.client_source.value if req.client_source else None,
+            client_source_event_id=req.client_source_event_id,
+            client_timestamp=req.client_timestamp,
         )
+    except SourceEventIntentConflict as conflict:
+        # §6B-2: changed-intent replay. Interim 409 — never 202. The conflict
+        # audit event was already emitted by submit_job; no duplicate job exists.
+        return JSONResponse(status_code=409, content=conflict.body)
+    except SourceEventConsistencyPending as pending:
+        # §6B-2: source-event mapping exists but its job is not yet loadable.
+        # Fail closed (retryable) rather than create a duplicate; no job created.
+        return JSONResponse(status_code=503, content=pending.body)
     except TimeoutError:
         return JSONResponse(
             status_code=503,

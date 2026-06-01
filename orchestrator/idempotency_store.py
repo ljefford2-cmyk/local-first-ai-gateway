@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
+from source_event import source_event_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,6 +46,13 @@ _KEY_PREFIX = "idem:"
 # records, distinct from the submit-side ``idem:`` namespace.
 _REVIEW_KEY_PREFIX = "review_idem:"
 
+# §6B-1: durable source-event identity namespace. Unlike ``idem:`` (purged for
+# terminal jobs on restart), this namespace is the durable "third identity" —
+# it is loaded on startup and is NOT matched by ``_purge_terminal_keys`` (which
+# matches only ``idem:``), so a source event keeps its identity past terminal
+# state and across restarts.
+_SOURCE_EVENT_PREFIX = "srcevent:"
+
 
 @dataclass
 class ReviewIdempotencyRecord:
@@ -52,6 +61,22 @@ class ReviewIdempotencyRecord:
     payload_identity: dict
     outcome: dict
     applied: bool
+    created_at: datetime
+
+
+@dataclass
+class SourceEventRecord:
+    """Durable mapping from a mobile source-event identity to its job.
+
+    Keyed (in the ``state`` table) by ``(client_source, client_source_event_id)``.
+    ``intent_equivalence_hash`` distinguishes an *equivalent* replay (same hash
+    -> dedup) from a *changed-intent* replay (different hash -> interim 409).
+    """
+
+    job_id: str
+    intent_equivalence_hash: str
+    client_source: str
+    client_source_event_id: str
     created_at: datetime
 
 
@@ -68,6 +93,7 @@ class IdempotencyStore:
     def __init__(self, db_path: str | None = None) -> None:
         self._records: dict[str, IdempotencyRecord] = {}
         self._review_records: dict[str, ReviewIdempotencyRecord] = {}
+        self._source_event_records: dict[str, SourceEventRecord] = {}
         self._lock = threading.Lock()
         self._db: sqlite3.Connection | None = None
 
@@ -171,6 +197,26 @@ class IdempotencyStore:
                 )
         except Exception:
             logger.warning("Failed to load review idempotency records from DB", exc_info=True)
+
+        # §6B-1: load durable source-event identity records. Never purged, so a
+        # source event keeps its identity past terminal state and across restart.
+        try:
+            cursor = self._db.execute(
+                "SELECT key, value FROM state WHERE key LIKE ?",
+                (_SOURCE_EVENT_PREFIX + "%",),
+            )
+            for row in cursor:
+                src_key = row[0][len(_SOURCE_EVENT_PREFIX):]
+                data = json.loads(row[1])
+                self._source_event_records[src_key] = SourceEventRecord(
+                    job_id=data["job_id"],
+                    intent_equivalence_hash=data["intent_equivalence_hash"],
+                    client_source=data["client_source"],
+                    client_source_event_id=data["client_source_event_id"],
+                    created_at=datetime.fromisoformat(data["created_at"]),
+                )
+        except Exception:
+            logger.warning("Failed to load source-event records from DB", exc_info=True)
 
     def _db_write(self, idempotency_key: str, record: IdempotencyRecord) -> None:
         """Write-through a single record to SQLite.  Failures are logged
@@ -323,3 +369,169 @@ class IdempotencyStore:
         """Look up a stored review-decision outcome by key. None if unknown."""
         with self._lock:
             return self._review_records.get(decision_idempotency_key)
+
+    # -- §6B-1/§6B-2: durable source-event identity ------------------------
+
+    @staticmethod
+    def _source_event_value(record: SourceEventRecord) -> str:
+        return json.dumps({
+            "job_id": record.job_id,
+            "intent_equivalence_hash": record.intent_equivalence_hash,
+            "client_source": record.client_source,
+            "client_source_event_id": record.client_source_event_id,
+            "created_at": record.created_at.isoformat(),
+        })
+
+    @staticmethod
+    def _row_to_source_event_record(data: dict) -> SourceEventRecord:
+        return SourceEventRecord(
+            job_id=data["job_id"],
+            intent_equivalence_hash=data["intent_equivalence_hash"],
+            client_source=data["client_source"],
+            client_source_event_id=data["client_source_event_id"],
+            created_at=datetime.fromisoformat(data["created_at"]),
+        )
+
+    def _db_try_insert_source_event(
+        self, src_key: str, record: SourceEventRecord,
+    ) -> bool:
+        """Atomic first-writer insert via ``ON CONFLICT(key) DO NOTHING``.
+
+        Returns True iff THIS call inserted the row (we are the first writer).
+        Returns False on a key conflict (another writer won), when there is no
+        DB, or on error — the caller disambiguates conflict-vs-absent by reading.
+        Uses a ``total_changes`` delta rather than ``rowcount`` for a reliable
+        inserted/skipped signal across SQLite builds.
+        """
+        if self._db is None:
+            return False
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            before = self._db.total_changes
+            self._db.execute(
+                "INSERT INTO state (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO NOTHING",
+                (_SOURCE_EVENT_PREFIX + src_key, self._source_event_value(record), now),
+            )
+            self._db.commit()
+            return (self._db.total_changes - before) == 1
+        except Exception:
+            logger.warning(
+                "DB reserve failed for source-event key %s", src_key, exc_info=True,
+            )
+            return False
+
+    def _db_read_source_event(self, src_key: str) -> Optional[SourceEventRecord]:
+        if self._db is None:
+            return None
+        try:
+            cursor = self._db.execute(
+                "SELECT value FROM state WHERE key = ?",
+                (_SOURCE_EVENT_PREFIX + src_key,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return self._row_to_source_event_record(json.loads(row[0]))
+        except Exception:
+            logger.warning(
+                "DB read failed for source-event key %s", src_key, exc_info=True,
+            )
+            return None
+
+    def _db_delete_source_event(self, src_key: str, job_id: str) -> None:
+        """Compare-and-delete: remove the row only if it still maps to job_id."""
+        if self._db is None:
+            return
+        try:
+            self._db.execute(
+                "DELETE FROM state WHERE key = ? "
+                "AND json_extract(value, '$.job_id') = ?",
+                (_SOURCE_EVENT_PREFIX + src_key, job_id),
+            )
+            self._db.commit()
+        except Exception:
+            logger.warning(
+                "DB delete failed for source-event key %s", src_key, exc_info=True,
+            )
+
+    def check_and_store_source_event(
+        self,
+        client_source: str,
+        client_source_event_id: str,
+        job_id: str,
+        intent_equivalence_hash: str,
+    ) -> tuple[str, Optional[SourceEventRecord]]:
+        """Atomically classify a source-event submission against durable state.
+
+        First-writer is arbitrated by SQLite (``INSERT ... ON CONFLICT(key) DO
+        NOTHING``) when a DB is present, so the decision is correct even across
+        processes; without a DB the in-memory map is the arbiter. Returns
+        ``(status, record)`` with status one of:
+
+        - ``"new"``        — we won the reservation; ``record`` is ours.
+        - ``"equivalent"`` — already reserved with the same intent hash; the
+          stored mapping is returned **unchanged**.
+        - ``"conflict"``   — already reserved with a different intent hash; the
+          stored mapping is left **unchanged**.
+
+        The whole operation runs under the store lock for in-memory consistency.
+        A ``new`` reservation is released via ``release_source_event`` if the
+        caller fails to materialize the job durably.
+        """
+        src_key = source_event_key(client_source, client_source_event_id)
+        with self._lock:
+            record = SourceEventRecord(
+                job_id=job_id,
+                intent_equivalence_hash=intent_equivalence_hash,
+                client_source=client_source,
+                client_source_event_id=client_source_event_id,
+                created_at=datetime.now(timezone.utc),
+            )
+            if self._db is not None and self._db_try_insert_source_event(src_key, record):
+                self._source_event_records[src_key] = record
+                return ("new", record)
+            # Either no DB, or we lost the insert — find the authoritative record
+            # (the winner may be another process, so the DB row is canonical).
+            existing = (
+                self._db_read_source_event(src_key) if self._db is not None else None
+            ) or self._source_event_records.get(src_key)
+            if existing is not None:
+                self._source_event_records[src_key] = existing
+                if existing.intent_equivalence_hash == intent_equivalence_hash:
+                    return ("equivalent", existing)
+                return ("conflict", existing)
+            # No existing record (no DB, or DB lost-then-vanished). Store ours.
+            self._source_event_records[src_key] = record
+            return ("new", record)
+
+    def release_source_event(
+        self, client_source: str, client_source_event_id: str, job_id: str,
+    ) -> None:
+        """Roll back a reservation that maps to *job_id* (compare-and-delete).
+
+        Used when a ``new`` reservation's job failed to materialize durably, so a
+        later retry of the same source event can create it cleanly rather than
+        observing a poisoned mapping. The compare on ``job_id`` ensures we never
+        delete a different writer's reservation.
+        """
+        src_key = source_event_key(client_source, client_source_event_id)
+        with self._lock:
+            existing = self._source_event_records.get(src_key)
+            if existing is not None and existing.job_id == job_id:
+                del self._source_event_records[src_key]
+            self._db_delete_source_event(src_key, job_id)
+
+    def get_source_event(
+        self, client_source: str, client_source_event_id: str,
+    ) -> Optional[SourceEventRecord]:
+        """Look up a stored source-event mapping (memory then DB). None if unknown."""
+        src_key = source_event_key(client_source, client_source_event_id)
+        with self._lock:
+            record = self._source_event_records.get(src_key)
+            if record is not None:
+                return record
+            record = self._db_read_source_event(src_key)
+            if record is not None:
+                self._source_event_records[src_key] = record
+            return record

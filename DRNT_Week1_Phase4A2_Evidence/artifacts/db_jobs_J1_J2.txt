@@ -1,0 +1,7 @@
+JOBS COLUMNS: ['job_id', 'data', 'status', 'created_at', 'idempotency_key']
+JOB 019e8445-4721 | status= submitted | idem_col= wk1-0601-idem-A
+   data JSON keys: ['candidate_models', 'classified_at', 'created_at', 'delivered_at', 'device', 'dispatched_at', 'error', 'governing_capability_id', 'idempotency_key', 'input_modality', 'job_id', 'last_failing_capability_id', 'override_type', 'parent_job_id', 'raw_input', 'recovery_dispatch_count', 'request_category', 'response_received_at', 'result', 'result_id', 'revoked_at', 'routing_recommendation', 'status', 'wal_level']
+   any client_* keys in data: NONE
+JOB 019e8445-943e | status= submitted | idem_col= wk1-0601-idem-B
+   data JSON keys: ['candidate_models', 'classified_at', 'created_at', 'delivered_at', 'device', 'dispatched_at', 'error', 'governing_capability_id', 'idempotency_key', 'input_modality', 'job_id', 'last_failing_capability_id', 'override_type', 'parent_job_id', 'raw_input', 'recovery_dispatch_count', 'request_category', 'response_received_at', 'result', 'result_id', 'revoked_at', 'routing_recommendation', 'status', 'wal_level']
+   any client_* keys in data: NONE

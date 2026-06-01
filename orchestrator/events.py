@@ -144,6 +144,10 @@ def event_job_submitted(
     raw_input: str,
     input_modality: str,
     device: str,
+    client_source: Optional[str] = None,
+    client_source_event_id: Optional[str] = None,
+    client_timestamp: Optional[str] = None,
+    intent_equivalence_hash: Optional[str] = None,
 ) -> dict[str, Any]:
     return build_event(
         event_type="job.submitted",
@@ -153,6 +157,76 @@ def event_job_submitted(
             "input_modality": input_modality,
             "device": device,
             "request_category": None,
+            # §6B-1: mobile source-event lineage preserved in the payload. The
+            # envelope source / source_event_id / timestamp stay server-generated
+            # (overriding them would collide with audit-log-writer envelope dedup).
+            # All four are null for non-mobile / legacy submits.
+            "client_source": client_source,
+            "client_source_event_id": client_source_event_id,
+            "client_timestamp": client_timestamp,
+            "intent_equivalence_hash": intent_equivalence_hash,
+        },
+    )
+
+
+def event_source_event_conflict(
+    *,
+    original_job_id: str,
+    client_source: str,
+    client_source_event_id: str,
+    original_intent_hash: str,
+    new_intent_hash: str,
+) -> dict[str, Any]:
+    """§6B-2: durable audit of a changed-intent source-event replay.
+
+    Emitted when the same ``(client_source, client_source_event_id)`` is
+    replayed with a *different* intent-equivalence hash. Records that duplicate
+    execution was blocked, the original mapping was preserved, and human
+    reconfirmation (§6B-3) remains required. This is interim behavior.
+    """
+    return build_event(
+        event_type="source_event.conflict",
+        job_id=original_job_id,
+        payload={
+            "source_event_replay": True,
+            "source_event_conflict": True,
+            "conflict_type": "intent_mismatch",
+            "original_job_id": original_job_id,
+            "client_source": client_source,
+            "client_source_event_id": client_source_event_id,
+            "original_intent_equivalence_hash": original_intent_hash,
+            "new_intent_equivalence_hash": new_intent_hash,
+            "action_required": "reconfirmation_required",
+            "adr_compliance": "partial_until_reconfirmation_path_exists",
+        },
+    )
+
+
+def event_source_event_divergence(
+    *,
+    original_job_id: str,
+    client_source: str,
+    client_source_event_id: str,
+) -> dict[str, Any]:
+    """§6B-2: best-effort diagnostic for a consistency-pending source event.
+
+    Emitted when a source-event mapping exists but its job cannot be loaded (a
+    concurrent cross-process writer still materializing, or external deletion).
+    No job is created on this path; the caller returns a retryable pending
+    response. Best-effort so an audit outage cannot block the fail-closed path.
+    """
+    return build_event(
+        event_type="source_event.consistency_pending",
+        job_id=original_job_id,
+        durability="best_effort",
+        payload={
+            "source_event_replay": True,
+            "source_event_conflict": False,
+            "consistency_pending": True,
+            "original_job_id": original_job_id,
+            "client_source": client_source,
+            "client_source_event_id": client_source_event_id,
+            "reason": "original_job_not_yet_loadable",
         },
     )
 

@@ -1,0 +1,7 @@
+J1(stale)  classify=yes(route=local)  generate(model.response)=1
+J2(stale)  classify=yes(route=local)  generate(model.response)=1
+JA(cc)     classify=yes(route=local)  generate(model.response)=1
+JB(cc)     classify=yes(route=local)  generate(model.response)=1
+JC(cc)     classify=yes(route=local)  generate(model.response)=1
+distinct route_ids used by my jobs: {'ollama-llama3-local'}
+TOTAL classify calls: 5 | TOTAL generate calls: 5 | => local llama3.1:8b calls = 10

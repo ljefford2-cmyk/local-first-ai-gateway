@@ -1,0 +1,6 @@
+PRESENT idem:wk1-0601-idem-CC-A -> {"job_id": "019e844c-901d-7613-a6ec-e53085d7048d", "status": "accepted", "created_at": "20
+PRESENT idem:wk1-0601-idem-CC-B -> {"job_id": "019e844d-38b7-7d41-9774-c962f6eaba95", "status": "accepted", "created_at": "20
+PRESENT review_idem:wk1-0601-decision-CC-1 -> {"payload_identity": {"job_id": "019e844c-901d-7613-a6ec-e53085d7048d", "decision": "appro
+--- job statuses ---
+019e844c-901d -> delivered
+019e844d-38b7 -> proposal_ready

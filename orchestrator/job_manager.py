@@ -41,8 +41,11 @@ from events import (
     event_job_revoked,
     event_job_submitted,
     event_model_response,
+    event_source_event_conflict,
+    event_source_event_divergence,
     event_wal_permission_check,
 )
+from source_event import compute_intent_equivalence_hash, source_event_key
 from override_types import CONDITIONAL_DEMOTION_TYPES, TERMINAL_STATES, is_sentinel_failure
 from models import Job, JobListResponse, JobStatus, JobStatusResponse, Proposal, ReviewDecision
 
@@ -59,6 +62,78 @@ from registry import EgressRegistry
 from worker_context import WorkerContext
 
 logger = logging.getLogger(__name__)
+
+
+class SourceEventIntentConflict(Exception):
+    """§6B-2: a source event was replayed with changed intent.
+
+    Raised by ``submit_job`` after the durable conflict audit event has been
+    emitted. Carries the interim ``409`` response body so the HTTP layer can
+    surface it without re-deriving the contract. No duplicate job is created and
+    the original source-event mapping is left unchanged.
+    """
+
+    def __init__(self, body: dict):
+        self.body = body
+        super().__init__(body.get("message", "source_event_intent_conflict"))
+
+
+class SourceEventConsistencyPending(Exception):
+    """§6B-2: a source-event mapping exists but its job is not yet loadable.
+
+    Raised instead of creating a duplicate job (the invariant: an existing
+    mapping must block duplicate execution). This is a transient, retryable
+    state — a concurrent cross-process writer is still materializing the
+    original job, or the job row was deleted out from under the mapping. Carries
+    a retryable 503-style body.
+    """
+
+    def __init__(self, body: dict):
+        self.body = body
+        super().__init__(body.get("message", "source_event_consistency_pending"))
+
+
+def _source_event_conflict_body(original_job_id: str) -> dict:
+    """Build the interim §6B-2 ``409`` body for a changed-intent replay.
+
+    ``adr_compliance = partial_until_reconfirmation_path_exists`` makes explicit
+    that this is interim behavior — final compliance requires §6B-3 human
+    reconfirmation, not a bare 409.
+    """
+    return {
+        "source_event_replay": True,
+        "source_event_conflict": True,
+        "conflict_type": "intent_mismatch",
+        "original_job_id": original_job_id,
+        "action_required": "reconfirmation_required",
+        "adr_compliance": "partial_until_reconfirmation_path_exists",
+        "message": (
+            "Same source event identity was replayed with changed intent. "
+            "Duplicate execution was blocked. Human reconfirmation path is "
+            "required before changed intent can be acted on."
+        ),
+    }
+
+
+def _source_event_pending_body(original_job_id: str) -> dict:
+    """Build the retryable §6B-2 ``503`` body for a consistency-pending replay.
+
+    The mapping exists but the original job is not yet loadable. Duplicate
+    execution is blocked; the client should retry shortly.
+    """
+    return {
+        "source_event_replay": True,
+        "source_event_conflict": False,
+        "consistency_pending": True,
+        "original_job_id": original_job_id,
+        "action_required": "retry",
+        "retryable": True,
+        "message": (
+            "Source event already maps to an existing job that is not yet "
+            "durable. Duplicate execution was blocked. Retry shortly."
+        ),
+    }
+
 
 # Bounded queue size — when full, new submissions get 503
 EVENT_QUEUE_BOUND = 256
@@ -114,6 +189,9 @@ class JobManager:
         self._connectivity_monitor = connectivity_monitor
         self._jobs: dict[str, Job] = {}
         self._worker_contexts: dict[str, WorkerContext] = {}  # job_id → WorkerContext
+        # §6B-2: per-source-event async locks serialize same-key submits across
+        # the whole materialization path (closes the reserve→materialize gap).
+        self._source_event_locks: dict[str, asyncio.Lock] = {}
         self._queue: asyncio.Queue[str] = asyncio.Queue(maxsize=EVENT_QUEUE_BOUND)
         self._worker_task: Optional[asyncio.Task] = None
         self._auto_accept_task: Optional[asyncio.Task] = None
@@ -168,6 +246,28 @@ class JobManager:
         except Exception:
             logger.warning("Failed to load jobs from database", exc_info=True)
 
+    def _load_job_by_id(self, job_id: str) -> Optional[Job]:
+        """Point-read a single job from SQLite by id, regardless of status.
+
+        Used by the §6B equivalent-replay path to return the original job when
+        it is terminal and therefore not resident in the in-memory cache
+        (``_load_jobs_from_db`` loads only non-terminal jobs). Returns None when
+        there is no DB or no matching row.
+        """
+        if self._job_db is None:
+            return None
+        try:
+            cursor = self._job_db.execute(
+                "SELECT data FROM jobs WHERE job_id = ?", (job_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return Job(**json.loads(row[0]))
+        except Exception:
+            logger.warning("Failed to point-read job %s", job_id, exc_info=True)
+            return None
+
     def _persist_job(self, job: Job) -> None:
         """Write-through a single job record to SQLite."""
         if self._job_db is None:
@@ -212,6 +312,9 @@ class JobManager:
         input_modality: str,
         device: str,
         idempotency_key: Optional[str] = None,
+        client_source: Optional[str] = None,
+        client_source_event_id: Optional[str] = None,
+        client_timestamp: Optional[str] = None,
     ) -> Job:
         """Create a job, emit job.submitted (durable, blocks until ACK),
         enqueue for async processing, and return the job record.
@@ -219,12 +322,173 @@ class JobManager:
         If *idempotency_key* is provided and already known, return the
         existing job without creating a duplicate.  If None, a key is
         auto-generated internally (backward compatibility).
+
+        §6B-1/§6B-2: when a mobile source-event identity
+        ``(client_source, client_source_event_id)`` is supplied it is the
+        authoritative dedup/conflict key. A per-source-event async lock
+        serializes same-key submits across the whole materialization path, and
+        the durable mapping is arbitrated first-writer-wins by the store (SQLite
+        ``ON CONFLICT`` when persisted). Outcomes:
+
+        - equivalent replay (same normalized intent) → return the original job;
+        - changed-intent replay (different intent hash) → durable conflict event
+          + ``SourceEventIntentConflict`` (interim 409);
+        - first sighting → reserve, then materialize the job; if materialization
+          fails before the job is durable, the reservation is rolled back so the
+          source event is not poisoned.
+
+        Invariant: an existing source-event mapping must block duplicate
+        execution. If the mapping exists but its job is not yet loadable (a
+        concurrent cross-process writer still materializing, or external
+        deletion), this fails closed with ``SourceEventConsistencyPending``
+        (retryable) — it never falls through to create a second job.
+
+        For a source-event submit the durable identity supersedes the submit
+        ``idempotency_key`` for dedup; a fresh internal key feeds the existing
+        idempotency-store / UNIQUE-column machinery.
         """
-        if idempotency_key is None:
-            idempotency_key = _uuid7()
+        if not (client_source is not None and client_source_event_id is not None):
+            # No source-event identity — legacy/non-mobile path, unchanged.
+            if idempotency_key is None:
+                idempotency_key = _uuid7()
+            return await self._create_job(
+                job_id=_uuid7(),
+                idempotency_key=idempotency_key,
+                raw_input=raw_input,
+                input_modality=input_modality,
+                device=device,
+                client_source=None,
+                client_source_event_id=None,
+                client_timestamp=client_timestamp,
+                intent_hash=None,
+            )
 
-        job_id = _uuid7()
+        intent_hash = compute_intent_equivalence_hash(raw_input, input_modality)
+        key = source_event_key(client_source, client_source_event_id)
 
+        # Layer 2: serialize the whole submit for this source-event key so an
+        # equivalent replay cannot observe an unmaterialized reservation in-process.
+        async with self._source_event_lock(key):
+            candidate_job_id = _uuid7()
+            status, record = self._idempotency_store.check_and_store_source_event(
+                client_source, client_source_event_id, candidate_job_id, intent_hash,
+            )
+
+            if status == "equivalent":
+                # Same source event + same intent → dedup to the original job.
+                existing = self._jobs.get(record.job_id) or self._load_job_by_id(
+                    record.job_id
+                )
+                if existing is None:
+                    # A concurrent (cross-process) writer may still be
+                    # materializing — wait briefly before deciding.
+                    existing = await self._await_job_loadable(record.job_id)
+                if existing is not None:
+                    return existing
+                # INVARIANT: never create a duplicate when a mapping exists. The
+                # original is unloadable — fail closed (retryable); emit a
+                # best-effort diagnostic.
+                await self._audit.emit_best_effort(
+                    event_source_event_divergence(
+                        original_job_id=record.job_id,
+                        client_source=client_source,
+                        client_source_event_id=client_source_event_id,
+                    )
+                )
+                raise SourceEventConsistencyPending(
+                    _source_event_pending_body(record.job_id)
+                )
+
+            if status == "conflict":
+                # Same source event + changed intent → interim 409. Emit the
+                # durable conflict event; create no job; leave the mapping intact.
+                await self._audit.emit_durable(
+                    event_source_event_conflict(
+                        original_job_id=record.job_id,
+                        client_source=client_source,
+                        client_source_event_id=client_source_event_id,
+                        original_intent_hash=record.intent_equivalence_hash,
+                        new_intent_hash=intent_hash,
+                    )
+                )
+                raise SourceEventIntentConflict(
+                    _source_event_conflict_body(record.job_id)
+                )
+
+            # status == "new": we hold the reservation for candidate_job_id. The
+            # source-event identity owns dedup, so use a fresh internal idem key.
+            try:
+                return await self._create_job(
+                    job_id=candidate_job_id,
+                    idempotency_key=_uuid7(),
+                    raw_input=raw_input,
+                    input_modality=input_modality,
+                    device=device,
+                    client_source=client_source,
+                    client_source_event_id=client_source_event_id,
+                    client_timestamp=client_timestamp,
+                    intent_hash=intent_hash,
+                )
+            except Exception:
+                # Roll back the reservation only if the job was never durably
+                # stored (e.g. audit emit failed). If it was persisted (e.g.
+                # queue-full marked it failed), leave the mapping pointing at it.
+                if (
+                    candidate_job_id not in self._jobs
+                    and self._load_job_by_id(candidate_job_id) is None
+                ):
+                    self._idempotency_store.release_source_event(
+                        client_source, client_source_event_id, candidate_job_id,
+                    )
+                raise
+
+    def _source_event_lock(self, key: str) -> asyncio.Lock:
+        """Return the per-source-event async lock for *key* (lazily created).
+
+        Safe to create lazily: this runs on the single event loop with no await
+        between the get and the set.
+        """
+        lock = self._source_event_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._source_event_locks[key] = lock
+        return lock
+
+    async def _await_job_loadable(
+        self, job_id: str, attempts: int = 5, delay: float = 0.05,
+    ) -> Optional[Job]:
+        """Briefly poll for a job a concurrent writer may still be materializing.
+
+        Returns the Job once loadable (memory or DB point-read), else None after
+        the bounded budget (~attempts * delay seconds).
+        """
+        for _ in range(attempts):
+            await asyncio.sleep(delay)
+            job = self._jobs.get(job_id) or self._load_job_by_id(job_id)
+            if job is not None:
+                return job
+        return None
+
+    async def _create_job(
+        self,
+        *,
+        job_id: str,
+        idempotency_key: str,
+        raw_input: str,
+        input_modality: str,
+        device: str,
+        client_source: Optional[str],
+        client_source_event_id: Optional[str],
+        client_timestamp: Optional[str],
+        intent_hash: Optional[str],
+    ) -> Job:
+        """Shared submit tail: idempotency dedup, durable job.submitted, persist,
+        enqueue. Returns the existing job on idempotency-key replay.
+
+        Raises if the durable job.submitted emit fails (the job is NOT stored) so
+        a source-event caller can roll back its reservation. A queue-full after
+        persist marks the job failed and re-raises, but the job is durable.
+        """
         # Idempotency check — if key already exists, return the stored job
         is_new, existing_job_id = self._idempotency_store.check_and_store(
             idempotency_key, job_id,
@@ -246,6 +510,10 @@ class JobManager:
             status=JobStatus.submitted.value,
             created_at=now,
             idempotency_key=idempotency_key,
+            client_source=client_source,
+            client_source_event_id=client_source_event_id,
+            client_timestamp=client_timestamp,
+            intent_equivalence_hash=intent_hash,
         )
 
         # Emit durable event — blocks until ACK (fail-closed)
@@ -254,6 +522,10 @@ class JobManager:
             raw_input=raw_input,
             input_modality=input_modality,
             device=device,
+            client_source=client_source,
+            client_source_event_id=client_source_event_id,
+            client_timestamp=client_timestamp,
+            intent_equivalence_hash=intent_hash,
         )
         await self._audit.emit_durable(event)
 

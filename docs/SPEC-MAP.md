@@ -122,4 +122,37 @@ Phase 4A.2 introduces the gateway-side Agent Proposal / Agent Inbox contract sur
 
 ---
 
+## §6B — Source-Event Identity (Normalization + Interim Conflict Contract)
+
+Durable, intent-aware identity for a mobile source event `(client_source, client_source_event_id)`: equivalent replays dedup; changed-intent replays return an interim `409`. Scope = §6B-1 + §6B-2 (interim); §6B-3 reconfirmation deferred. See [STATUS.md](../STATUS.md) §"§6B — Source-Event Identity" and [`docs/plans/6b-source-event-identity.md`](plans/6b-source-event-identity.md).
+
+> **Naming caution:** this "§6B" is the Source-Event Identity ADR's section number, **not** the repo's Spec-6 `phase6b` (Silo Runtime Security). Modules/tests use `source_event*` / `test_source_event_identity` to avoid collision with `tests/test_phase6b.py`.
+
+### Modules / behavior
+
+| Surface | Implementation | Tests |
+|---------|----------------|-------|
+| Normalization + intent hash | `orchestrator/source_event.py` (`normalize_raw_input`, `compute_intent_equivalence_hash`, `source_event_key`) | `orchestrator/test_source_event.py` |
+| Durable source-event store (`srcevent:` ns, never purged, DB first-writer) | `orchestrator/idempotency_store.py` (`SourceEventRecord`, `check_and_store_source_event` via `ON CONFLICT DO NOTHING`, `release_source_event`, `get_source_event`) | `tests/test_source_event_identity.py` |
+| Submit-path guard (dedup / conflict / lineage / race-safety) | `orchestrator/job_manager.py` (`submit_job`, `_create_job`, `_source_event_lock`, `_await_job_loadable`, `SourceEventIntentConflict`, `SourceEventConsistencyPending`, `_load_job_by_id`) | `tests/test_source_event_identity.py` |
+| Route 409 (changed intent) / 503 (consistency-pending) mapping + client-field forwarding | `orchestrator/main.py` (`submit_job` route) | `tests/test_source_event_identity.py`, `tests/test_source_event_identity_e2e.py` |
+
+### Models / events
+
+| Model / event | Implementation |
+|---------------|----------------|
+| `Job.client_source`, `Job.client_source_event_id`, `Job.client_timestamp`, `Job.intent_equivalence_hash` | `orchestrator/models.py` (`Job`) |
+| `job.submitted` lineage payload (Phase 4A AC#6) | `orchestrator/events.py` (`event_job_submitted`) |
+| `source_event.conflict` (durable conflict audit event) | `orchestrator/events.py` (`event_source_event_conflict`) |
+| `source_event.consistency_pending` (best-effort divergence diagnostic) | `orchestrator/events.py` (`event_source_event_divergence`) |
+
+### Cost-aware test buckets (Insert D)
+
+| Bucket | Files | State |
+|--------|-------|-------|
+| Free / submit-boundary (no model, in-process; incl. concurrency hardening) | `orchestrator/test_source_event.py`, `tests/test_source_event_identity.py` | 32 passed 2026-06-01 (`--noconftest`) |
+| Local-model (real pipeline → `proposal_ready`/`delivered`) | `tests/test_source_event_identity_e2e.py` (`@pytest.mark.e2e`) | Authored; **paused** — run after rebuilding the orchestrator image from this branch |
+
+---
+
 This table is a navigation aid. For claim-level status with evidence, see [STATUS.md](../STATUS.md). For security boundaries, see [THREAT-MODEL.md](../THREAT-MODEL.md). For worker execution details, see [docs/WORKER-EXECUTION.md](WORKER-EXECUTION.md).
