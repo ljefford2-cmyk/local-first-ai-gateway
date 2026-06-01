@@ -579,6 +579,13 @@ class JobManager:
         if job.override_type is not None:
             return {"status": "no_op", "reason": "already_overridden", "job_id": job_id}
 
+        # KI-3: reserve before first await for branches whose original
+        # first mutation happened after an await. Modify already reserves
+        # inside its own validated block; unknown falls through unchanged.
+        if override_type in ("cancel", "redirect", "escalate"):
+            job.override_type = override_type
+            self._persist_job(job)
+
         # Phase 4A.2.d: proposal_ready first-writer guard. Set override_type
         # before any durable human.override or terminal lifecycle event await
         # so a concurrent review against the same proposal cannot pass its

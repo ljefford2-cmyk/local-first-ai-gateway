@@ -756,3 +756,80 @@ async def test_modify_sets_override_type_before_first_durable_emit():
         if etype == "human.override"
     ]
     assert override_observations == ["modify"], audit.override_type_at_emit
+
+
+# ---------- KI-3: cancel/redirect/escalate first-writer TOCTOU ----------
+#
+# KI-2 closed the modify branch only. The sibling cancel/redirect/escalate
+# branches set their first-writer guard (job.override_type) just like modify
+# used to — only AFTER their first durable human.override emit — so on a
+# non-proposal_ready, non-terminal job the entry guard (override_type-is-None)
+# was a time-of-check separated from the set by awaits. Two concurrent
+# override_job calls of different types could BOTH pass the stale guard and
+# launder two override chains into the audit log. The fix reserves override_type
+# synchronously before the first await for the cancel/redirect/escalate branches
+# (modify already reserves inside its own validated block via KI-2; unknown types
+# fall through unchanged). This test is red-green: it FAILS on unpatched HEAD
+# (both calls succeed) and PASSES after the upfront reservation (exactly one
+# succeeds; the other is already_overridden).
+
+
+@pytest.mark.asyncio
+async def test_override_concurrent_non_proposal_ready_first_writer_wins():
+    """Two concurrent non-proposal_ready overrides of different types (escalate
+    vs cancel) on one job must serialize first-writer-wins.
+
+    RED before the fix: escalate (A) parks at its human.override with
+    override_type still None, so cancel (B) passes the stale entry guard and runs
+    a full second override chain — two successes, two human.override events.
+    GREEN after the fix: A reserves override_type synchronously before its first
+    await, so B observes it set and returns already_overridden without emitting —
+    exactly one success and one no-op.
+    """
+    audit = _GatedHumanOverrideAudit()
+    jm = _make_manager(audit)
+
+    # dispatched is non-proposal_ready and non-terminal, with override_type=None.
+    job = _make_job(job_id="job-ki3-conc", status=JobStatus.dispatched.value)
+    jm._jobs[job.job_id] = job
+    assert job.override_type is None
+
+    # Writer A (escalate) enters and parks at its first human.override emit.
+    # detail is a valid capability_id so the successor spawn resolves in both
+    # the red (A completes) and green (A wins) outcomes.
+    task_a = asyncio.create_task(
+        jm.override_job(
+            job_id=job.job_id,
+            override_type="escalate",
+            target="routing",
+            detail="route.cloud.openai",
+            device="phone",
+        )
+    )
+    await audit.first_override_reached.wait()
+
+    # Writer B (cancel) runs the entry guard while A is parked mid-escalate.
+    result_b = await jm.override_job(
+        job_id=job.job_id,
+        override_type="cancel",
+        target="routing",
+        detail="",
+        device="watch",
+    )
+
+    # Let A finish.
+    audit.release.set()
+    result_a = await task_a
+
+    # Exactly one successful override and one already_overridden no-op.
+    statuses = sorted([result_a["status"], result_b["status"]])
+    assert statuses == ["escalated", "no_op"], (result_a, result_b)
+
+    loser = result_a if result_a["status"] == "no_op" else result_b
+    assert loser["reason"] == "already_overridden"
+
+    # No laundered second override chain — only the winner emitted human.override.
+    assert len(audit.get_events_by_type("human.override")) == 1
+
+    # Final override_type is one of the two attempted valid overrides.
+    assert job.override_type in ("cancel", "escalate")
