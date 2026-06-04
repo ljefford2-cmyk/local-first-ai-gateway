@@ -91,6 +91,8 @@ services:
     networks:
       - drnt-internal
       - drnt-external
+      # Patch A: reachable by isolated workers for guarded /dispatch.
+      - drnt-sandbox
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\""]
       interval: 15s
@@ -115,6 +117,8 @@ services:
     networks:
       - drnt-internal
       - drnt-external
+      # Patch A: reachable by isolated workers for local inference.
+      - drnt-sandbox
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 30s
@@ -167,3 +171,18 @@ networks:
   drnt-external:
     name: drnt-external
     driver: bridge
+  # Patch A — network-level egress isolation (THREAT-MODEL.md item 6).
+  # Workers with egress run ONLY on this network. It is `internal: true`, so it
+  # has no route to the public internet: a compromised worker cannot bypass the
+  # egress-gateway by calling out directly (the code-level egress_proxy gate is
+  # now backed by network-level enforcement). ollama and egress-gateway also
+  # attach here so workers keep local inference and the guarded /dispatch path;
+  # both retain real internet egress via drnt-external (a multi-homed
+  # container's default route comes from the non-internal network).
+  # NOTE: this network is internal by design — never publish a host port off it
+  # (published ports require a non-internal network); the orchestrator therefore
+  # stays on drnt-internal, not here.
+  drnt-sandbox:
+    name: drnt-sandbox
+    driver: bridge
+    internal: true

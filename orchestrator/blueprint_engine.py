@@ -128,9 +128,15 @@ class BlueprintEngine:
         return mounts
 
     def _build_network_config(self, manifest: RuntimeManifest) -> ContainerNetworkConfig:
-        """Determine network mode from egress_allow."""
+        """Determine network mode from egress_allow.
+
+        Workers with egress join drnt-sandbox — an internal-only Docker network
+        with no route to the public internet (Patch A). They can still reach
+        ollama and the egress-gateway (both attached to drnt-sandbox) but cannot
+        bypass the gateway to call the internet directly.
+        """
         if manifest.network.egress_allow:
-            network_mode = "drnt-internal"
+            network_mode = "drnt-sandbox"
         else:
             network_mode = "none"
         return ContainerNetworkConfig(

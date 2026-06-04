@@ -101,7 +101,7 @@ into the container via Docker volumes.
 | /inbox mount | read-only | Worker cannot modify its own task |
 | /outbox mount | read-write | Only writable mount for result output |
 | tmpfs /tmp | size=64m, noexec, nosuid | Scratch space, no binary execution |
-| Network | drnt-internal | Scoped to internal Docker network |
+| Network | drnt-sandbox | Internal-only Docker net (no internet route, Patch A); egress-workers reach only ollama + egress-gateway, no-egress workers get network_mode=none |
 
 ## Audit Events
 
@@ -135,7 +135,7 @@ validation blocks the orchestrator from accepting jobs (Spec 6D).
 
 | Non-Goal | Reason |
 |---|---|
-| Per-worker network isolation | v1 uses shared `drnt-internal` network; per-container network namespaces are v2 |
+| Per-worker network isolation | Egress-workers share the internal `drnt-sandbox` network (no internet route, Patch A); per-container network namespaces remain v2 |
 | Cloud tasks in workers | Cloud routing goes through the egress gateway, not worker containers |
 | Container pooling | Workers are one-shot; pooling warm containers adds complexity without v1 benefit |
 | GPU passthrough | v1 targets CPU-only Ollama inference on Raspberry Pi hardware |
@@ -148,7 +148,7 @@ validation blocks the orchestrator from accepting jobs (Spec 6D).
 | Risk | Current State | Mitigation | v2 Path |
 |---|---|---|---|
 | Docker socket (rw) | Docker socket is mounted only on the `worker-proxy` sidecar; orchestrator has zero Docker SDK usage | Sidecar exposes a constrained HTTP API surface; GC loop removes orphaned stopped containers | Rootless Docker or Podman with socket proxy that filters API calls |
-| Shared network | All workers share `drnt-internal` bridge network | Workers have no listening ports; egress proxy validates outbound requests at code level | Per-worker network namespace with iptables rules enforced by the proxy |
+| Shared network | Egress-workers share the `drnt-sandbox` bridge network | Network is `internal: true` (no internet route, Patch A) so a worker cannot bypass the egress gateway with direct calls; workers have no listening ports; egress proxy also validates outbound requests at the code level | Per-worker network namespace with iptables rules enforced by the proxy |
 | Image trust | Worker image is built locally, not pulled from a registry | Image hash is validated at startup (Spec 6D); no `docker pull` at runtime | Image signing with Notary/cosign and admission control |
 
 ## Acceptance Criteria

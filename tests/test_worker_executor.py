@@ -886,7 +886,7 @@ class TestLifecycleSeccompNetworkPlumbing:
 
     @pytest.mark.asyncio
     async def test_passes_egress_proxy_network_for_nonempty_egress(self, tmp_path):
-        """Workers with non-empty egress_allow get network_mode='drnt-internal'."""
+        """Workers with non-empty egress_allow get network_mode='drnt-sandbox'."""
         from egress_proxy import EgressPolicy
 
         lifecycle, audit, executor = _make_lifecycle_with_executor(tmp_path)
@@ -905,7 +905,7 @@ class TestLifecycleSeccompNetworkPlumbing:
         await lifecycle.execute_in_worker(ctx, prompt="hello")
 
         sc = executor.last_kwargs["security_config"]
-        assert sc["network_mode"] == "drnt-internal"
+        assert sc["network_mode"] == "drnt-sandbox"
 
     @pytest.mark.asyncio
     async def test_blueprint_resource_values_reach_executor(self, tmp_path):
