@@ -26,6 +26,9 @@ services:
       - DRNT_LOG_LEVEL=INFO
       - OLLAMA_URL=http://ollama:11434
       - EGRESS_GATEWAY_URL=http://egress-gateway:8080
+      # Shared authority token for egress-gateway /dispatch. Override in prod.
+      # Must match the egress-gateway value; workers never receive it.
+      - DRNT_DISPATCH_AUTH_TOKEN=${DRNT_DISPATCH_AUTH_TOKEN:-drnt-dev-dispatch-authority}
       - DRNT_RESULTS_DIR=/var/drnt/results
       - DRNT_SENSITIVITY_CONFIG=/var/drnt/config/sensitivity.json
       - DRNT_CONTEXT_STORE=/var/drnt/context
@@ -80,6 +83,8 @@ services:
       - DRNT_LOG_LEVEL=INFO
       - DRNT_SECRETS_PATH=/var/drnt/secrets/.env
       - DRNT_CONFIG_PATH=/var/drnt/config/egress.json
+      # Must match the orchestrator value; rejects unauthorized (worker) callers.
+      - DRNT_DISPATCH_AUTH_TOKEN=${DRNT_DISPATCH_AUTH_TOKEN:-drnt-dev-dispatch-authority}
     volumes:
       - ./config:/var/drnt/config:ro
       - ./secrets:/var/drnt/secrets:ro

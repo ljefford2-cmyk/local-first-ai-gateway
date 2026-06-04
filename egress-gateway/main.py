@@ -7,6 +7,7 @@ them to cloud APIs. Sits on both drnt-internal and drnt-external networks.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 import os
 import time
@@ -16,7 +17,7 @@ from typing import Any, Optional
 import httpx
 import uuid_utils
 from dotenv import dotenv_values
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from providers import ADAPTERS
@@ -31,6 +32,12 @@ logger = logging.getLogger(__name__)
 
 SECRETS_PATH = os.environ.get("DRNT_SECRETS_PATH", "/var/drnt/secrets/.env")
 CONFIG_PATH = os.environ.get("DRNT_CONFIG_PATH", "/var/drnt/config/egress.json")
+# Shared authority token the orchestrator presents on every /dispatch call.
+# Worker containers are never given this token (see worker_executor.py — worker
+# env is an explicit four-key allowlist), so a worker-originated request is
+# rejected at the authority gate before any route/credential/upstream work.
+# Fail-closed: if unset, every /dispatch call is rejected.
+DISPATCH_AUTH_TOKEN = os.environ.get("DRNT_DISPATCH_AUTH_TOKEN", "")
 
 registry = EgressRegistry(config_path=CONFIG_PATH)
 rate_limiter = SlidingWindowRateLimiter()
@@ -89,6 +96,11 @@ async def lifespan(app: FastAPI):
     global secrets
     registry.load()
     secrets = _load_secrets()
+    if not DISPATCH_AUTH_TOKEN:
+        logger.warning(
+            "DRNT_DISPATCH_AUTH_TOKEN is not set — /dispatch is fail-closed and "
+            "will reject all requests. Configure the shared authority token."
+        )
     logger.info("Egress gateway ready, %d secrets loaded", len(secrets))
     yield
 
@@ -96,7 +108,42 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="DRNT Egress Gateway", version="0.3.0", lifespan=lifespan)
 
 
-@app.post("/dispatch", response_model=DispatchResponse)
+def _presented_token(authorization: Optional[str]) -> str:
+    """Extract the bearer token from an Authorization header ("" if absent/malformed)."""
+    if not authorization:
+        return ""
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer":
+        return ""
+    return token.strip()
+
+
+async def require_dispatch_authority(
+    authorization: Optional[str] = Header(default=None),
+) -> None:
+    """Reject unauthorized callers before any dispatch processing.
+
+    The orchestrator presents the shared DISPATCH_AUTH_TOKEN as
+    ``Authorization: Bearer <token>``. Worker containers are never given the
+    token, so a worker that reaches the gateway is rejected here — before route
+    validation, route_mismatch, credential selection, upstream client creation,
+    or dispatch execution. Fail-closed: if no token is configured, all dispatch
+    is rejected.
+    """
+    presented = _presented_token(authorization)
+    if (
+        not DISPATCH_AUTH_TOKEN
+        or not presented
+        or not hmac.compare_digest(presented, DISPATCH_AUTH_TOKEN)
+    ):
+        raise HTTPException(status_code=401, detail="dispatch authority required")
+
+
+@app.post(
+    "/dispatch",
+    response_model=DispatchResponse,
+    dependencies=[Depends(require_dispatch_authority)],
+)
 async def dispatch(req: DispatchRequest):
     """Execute the Spec 4 check sequence and dispatch to cloud API."""
 

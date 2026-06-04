@@ -139,6 +139,9 @@ def _source_event_pending_body(original_job_id: str) -> dict:
 EVENT_QUEUE_BOUND = 256
 
 EGRESS_GATEWAY_URL = os.environ.get("EGRESS_GATEWAY_URL", "http://egress-gateway:8080")
+# Shared authority token presented to the egress gateway's /dispatch endpoint.
+# Workers never receive this token, so only the orchestrator can dispatch.
+DISPATCH_AUTH_TOKEN = os.environ.get("DRNT_DISPATCH_AUTH_TOKEN", "")
 RESULTS_DIR = os.environ.get("DRNT_RESULTS_DIR", "/var/drnt/results")
 
 # Phase 5E: auto-accept window for WAL-2+ delivered jobs (seconds)
@@ -1616,6 +1619,7 @@ class JobManager:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 egress_resp = await client.post(
                     f"{EGRESS_GATEWAY_URL}/dispatch",
+                    headers={"Authorization": f"Bearer {DISPATCH_AUTH_TOKEN}"},
                     json={
                         "job_id": job_id,
                         "route_id": route_id,
