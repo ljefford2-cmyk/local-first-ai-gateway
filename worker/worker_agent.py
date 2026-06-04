@@ -12,6 +12,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import socket
 import sys
 import time
 import traceback
@@ -126,9 +127,118 @@ def handle_syscall_probe(task: dict) -> dict:
         }
 
 
+def handle_egress_probe(task: dict) -> dict:
+    """TEST-ONLY hostile-worker egress boundary probe.
+
+    Runs INSIDE the worker container, in the same network context as a real
+    route.local job, and measures whether the V1 code-level egress gate is
+    backed by a mechanical network boundary. The contract is fully hardcoded —
+    no field of the task body changes behavior:
+
+      A. external off-allowlist host   1.1.1.1:443           MUST be blocked
+      B. egress-gateway /dispatch      egress-gateway:8080   reachable, authz-gated
+      C. allowed local service         ollama:11434          MUST be reachable
+
+    `success` means "the network path was reachable from the worker". On main,
+    egress-workers run on drnt-sandbox (internal: true): A is blocked at the
+    network layer, while egress-gateway and ollama also attach to drnt-sandbox
+    so B and C stay reachable — but /dispatch rejects the unauthenticated worker
+    via the Patch B authority gate (the worker never holds the token). The
+    gateway probe uses an intentionally invalid route_id so it proves the relay
+    is reachable WITHOUT spending cloud credentials.
+    """
+    print("PROBE: entered handle_egress_probe", flush=True)
+
+    timeout = 3.0
+
+    def _tcp_connect(host: str, port: int) -> dict:
+        t0 = time.monotonic()
+        try:
+            conn = socket.create_connection((host, port), timeout=timeout)
+            conn.close()
+            return {
+                "success": True,
+                "error": None,
+                "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
+            }
+
+    targets = []
+
+    # A. External off-allowlist destination. Raw IP -> no DNS dependency, so
+    #    success unambiguously means the worker routed packets to the public
+    #    internet, off any allowlist.
+    a = _tcp_connect("1.1.1.1", 443)
+    targets.append({
+        "target": "external_offallowlist", "host": "1.1.1.1", "port": 443,
+        "operation": "tcp_connect", **a,
+    })
+
+    # B. egress-gateway /dispatch open-relay reachability. The TCP connect
+    #    proves L4 reachability; the POST (intentionally invalid route_id)
+    #    proves the relay processes worker-originated requests, all without
+    #    cloud spend. Distinguishes "network path reachable" (HTTP response of
+    #    any kind) from "blocked by a mechanical boundary" (connect failure).
+    b = _tcp_connect("egress-gateway", 8080)
+    gw = {
+        "target": "egress_gateway_dispatch", "host": "egress-gateway", "port": 8080,
+        "operation": "tcp_connect+http_post_dispatch", **b,
+        "http_status": None, "http_body_snippet": None,
+    }
+    if b["success"]:
+        try:
+            payload = json.dumps({
+                "job_id": "egress-probe",
+                "route_id": "__egress_probe_invalid_route__",
+                "capability_id": "route.local",
+                "target_model": "none",
+                "prompt": "",
+                "assembled_payload_hash": "0",
+                "wal_permission_check_ref": "0",
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "http://egress-gateway:8080/dispatch", data=payload,
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                gw["http_status"] = resp.status
+                gw["http_body_snippet"] = resp.read(400).decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            # An HTTP error response still proves the relay is reachable.
+            gw["http_status"] = exc.code
+            gw["http_body_snippet"] = f"HTTPError: {exc}"
+        except Exception as exc:
+            gw["http_body_snippet"] = f"{type(exc).__name__}: {exc}"
+    targets.append(gw)
+
+    # C. Allowed local service -- control proving the worker has a working
+    #    network stack and selective behavior (not a dead worker). MUST be
+    #    reachable.
+    c = _tcp_connect("ollama", 11434)
+    targets.append({
+        "target": "ollama_allowed", "host": "ollama", "port": 11434,
+        "operation": "tcp_connect", **c,
+    })
+
+    return {
+        "task_id": task.get("task_id"),
+        "status": "success",
+        "result": json.dumps({"targets": targets}),
+        "token_count_in": 0,
+        "token_count_out": 0,
+        "model": "egress-probe",
+    }
+
+
 TASK_HANDLERS = {
     "text_generation": handle_text_generation,
     "syscall_probe": handle_syscall_probe,
+    "egress_probe": handle_egress_probe,
 }
 
 

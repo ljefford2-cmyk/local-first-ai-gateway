@@ -107,6 +107,34 @@ class SyscallProbeResponse(BaseModel):
     container_id: Optional[str] = None
 
 
+class EgressProbeTarget(BaseModel):
+    """One target's reachability result from the hostile-worker egress probe."""
+    target: str
+    host: str
+    port: int
+    operation: str
+    success: bool
+    error: Optional[str] = None
+    elapsed_ms: Optional[float] = None
+    http_status: Optional[int] = None
+    http_body_snippet: Optional[str] = None
+
+
+class EgressProbeResponse(BaseModel):
+    """Result of the fixed hostile-worker egress boundary probe (TEST-ONLY)."""
+    status: str
+    # The network the probe worker actually used (from its route.local
+    # blueprint). "drnt-sandbox" == the wired route.local worker path.
+    network_mode: Optional[str] = None
+    # True iff the probe ran on the live route.local network ("drnt-sandbox").
+    # If False (e.g. "none"), the probe is NOT in the real hostile-worker
+    # network context and the result is invalid.
+    network_context_matches_route_local: bool = False
+    targets: list[EgressProbeTarget] = Field(default_factory=list)
+    result_line: str = ""
+    container_id: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
@@ -451,5 +479,85 @@ async def e2e_syscall_probe():
     return SyscallProbeResponse(
         status="ok",
         result_line=result.get("response_text", ""),
+        container_id=result.get("container_id"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /admin/e2e/egress-probe  (TEST-ONLY — hostile-worker egress boundary)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/e2e/egress-probe", response_model=EgressProbeResponse)
+async def e2e_egress_probe():
+    """TEST-ONLY. Run the fixed hostile-worker egress boundary probe in a worker.
+
+    Dispatches through the SAME WorkerLifecycle path as a live route.local job
+    (manifest -> validate -> blueprint -> proxy registry -> worker-proxy), so
+    the probe worker runs with the same effective network configuration as the
+    real route.local worker path. The probe contract is hardcoded in the worker
+    handler (handle_egress_probe); this endpoint accepts no body and exposes no
+    parameters.
+
+    The response reports the network the probe worker actually used
+    (network_mode), derived from the route.local blueprint, so the caller can
+    confirm the probe ran on the live path (drnt-sandbox) rather than an
+    isolated network that would invalidate the test.
+    """
+    err = _guard()
+    if err:
+        return err
+
+    if _worker_lifecycle is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "not_ready", "detail": "worker_lifecycle unavailable"},
+        )
+
+    probe_cap_id = "route.local"
+    if _registry.get(probe_cap_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"probe capability {probe_cap_id} missing from registry",
+        )
+
+    import json as _json
+    import uuid_utils
+    from models import Job
+
+    probe_job = Job(
+        job_id=str(uuid_utils.uuid7()),
+        raw_input="__e2e_egress_probe__",
+        input_modality="text",
+        device="watch",
+        governing_capability_id=probe_cap_id,
+    )
+
+    ctx = await _worker_lifecycle.prepare_worker(probe_job)
+    # Network context the probe worker will actually use. This is the SAME value
+    # a live route.local job gets — it is computed from the route.local manifest/
+    # blueprint by the identical prepare_worker path above.
+    network_mode = ctx.blueprint.network_config.network_mode
+    on_live_network = network_mode == "drnt-sandbox"
+    try:
+        result = await _worker_lifecycle.execute_in_worker(
+            ctx, prompt="", model="", task_type="egress_probe",
+        )
+    finally:
+        await _worker_lifecycle.teardown_worker(ctx)
+
+    raw = result.get("response_text", "")
+    targets: list = []
+    try:
+        targets = _json.loads(raw).get("targets", [])
+    except (ValueError, TypeError, AttributeError):
+        targets = []
+
+    return EgressProbeResponse(
+        status="ok",
+        network_mode=network_mode,
+        network_context_matches_route_local=on_live_network,
+        targets=targets,
+        result_line=raw,
         container_id=result.get("container_id"),
     )

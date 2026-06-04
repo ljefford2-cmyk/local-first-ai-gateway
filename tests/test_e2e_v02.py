@@ -392,6 +392,109 @@ class TestWorkerExecution:
 
 
 # ===========================================================================
+# Category 2b: Hostile-worker egress boundary probe  (non-disruptive)
+# ===========================================================================
+
+
+@pytest.mark.e2e
+class TestEgressBoundaryProbe:
+    """Hostile-worker egress boundary probe — regression guard for the V1 boundary.
+
+    Runs the probe through the SAME route.local worker path as real jobs
+    (POST /admin/e2e/egress-probe), then asserts the SECURE boundary state that
+    Patch A (network isolation) + Patch B (dispatch authority) established:
+
+      A. external off-allowlist (1.1.1.1:443)   MUST be blocked — workers run on
+                                                 drnt-sandbox (internal: true),
+                                                 no route to the public internet
+      B. egress-gateway /dispatch               reachable at L4, but the
+                                                 unauthenticated worker is
+                                                 rejected with HTTP 401 by the
+                                                 Patch B authority gate before any
+                                                 route validation or cloud spend
+      C. ollama:11434                            MUST be reachable (control)
+
+    ollama and egress-gateway also attach to drnt-sandbox so the guarded local
+    paths stay reachable (B/C), but a worker never holds DRNT_DISPATCH_AUTH_TOKEN,
+    so /dispatch returns 401. This test is GREEN on a correctly-secured stack and
+    turns RED if either boundary regresses (e.g. drnt-sandbox loses internal:
+    true, or the authority gate is removed). See THREAT-MODEL.md item 6 and
+    STATUS.md row 6.12.
+
+    Requires the worker image to carry the ``egress_probe`` handler — rebuild
+    with ``docker compose build worker`` if this 404s or returns no targets.
+    """
+
+    @pytest.mark.asyncio
+    async def test_hostile_worker_egress_boundary(self):
+        await ensure_hub_active()
+
+        r = await api_post("/admin/e2e/egress-probe")
+        assert r.status_code == 200, (
+            f"probe endpoint failed: status={r.status_code} body={r.text}"
+        )
+        body = r.json()
+
+        targets = {t["target"]: t for t in body.get("targets", [])}
+        diag = (
+            f"network_mode={body.get('network_mode')!r} "
+            f"targets={body.get('targets')!r}"
+        )
+
+        # Network-context guard: the probe MUST run on the same network as the
+        # live route.local worker path. If it is isolated (e.g. "none"), the
+        # probe is not exercising the real hostile-worker context and the result
+        # is invalid — fail loudly rather than report a false GREEN.
+        assert body.get("network_mode") == "drnt-sandbox", (
+            "INVALID PROBE: expected probe worker on 'drnt-sandbox' (the wired "
+            f"route.local network), got {body.get('network_mode')!r}. The probe "
+            f"is not in the live worker network context. {diag}"
+        )
+        assert body.get("network_context_matches_route_local") is True, diag
+
+        assert set(targets) >= {
+            "external_offallowlist", "egress_gateway_dispatch", "ollama_allowed",
+        }, f"probe did not report all three targets. {diag}"
+
+        ext = targets["external_offallowlist"]
+        gw = targets["egress_gateway_dispatch"]
+        ollama = targets["ollama_allowed"]
+
+        # C (control): allowed local service MUST be reachable. If this fails the
+        # worker has no working network at all and A/B would be false-secure — so
+        # assert it first.
+        assert ollama["success"] is True, (
+            "control target ollama:11434 is unreachable — worker network is "
+            f"broken, the boundary assertions would be meaningless. {ollama!r}"
+        )
+
+        # A: external off-allowlist egress MUST be blocked by the drnt-sandbox
+        #    internal network (no route to the public internet).
+        assert ext["success"] is False, (
+            "BOUNDARY BREACH: worker reached off-allowlist external host "
+            f"1.1.1.1:443 (elapsed_ms={ext.get('elapsed_ms')}). Workers must run "
+            "on drnt-sandbox (internal: true) with no NAT to the public "
+            f"internet. {ext!r}"
+        )
+
+        # B: egress-gateway is reachable at L4 (it shares drnt-sandbox so workers
+        #    can use the guarded /dispatch path), but the Patch B authority gate
+        #    rejects the unauthenticated worker with HTTP 401 BEFORE route
+        #    validation or any upstream dispatch — so no cloud spend.
+        assert gw["success"] is True, (
+            "egress-gateway:8080 is unreachable from the worker — workers must "
+            f"keep the guarded /dispatch path on drnt-sandbox. {gw!r}"
+        )
+        assert gw["http_status"] == 401, (
+            "BOUNDARY BREACH: unauthenticated worker /dispatch was not rejected "
+            f"by the Patch B authority gate (expected HTTP 401, got "
+            f"{gw.get('http_status')!r}, snippet={gw.get('http_body_snippet')!r}). "
+            "A hostile worker without the dispatch authority token must not be "
+            f"able to drive the cloud relay. {gw!r}"
+        )
+
+
+# ===========================================================================
 # Category 3: Concurrency limits
 # ===========================================================================
 
