@@ -38,6 +38,24 @@
 | 1.11 | Audit logs persist across container restarts | Implemented | `docker-compose.yml` — `audit-logs` named Docker volume mounted at `/var/drnt/audit`. |
 | 1.12 | Audit log writer runs as isolated service | Implemented | `docker-compose.yml` — `drnt-audit-log-writer` service on `drnt-internal` network only. |
 
+### Audit Integrity: Segment-Aware Verification & Fast-Fail (Patch 0)
+
+Audit integrity is **segment-aware**: the log is a sequence of independently
+genesis-anchored segments (the writer re-anchors at genesis when it opens a new
+daily file after a gap — `recover_chain_state` reads only yesterday + today), not
+one global unbroken chain. A `prev_hash == GENESIS` is valid only at a segment
+start (a file's first record); within a segment the chain must be unbroken. The
+accumulated dev volume (85,249 records, 5 segments) verifies as **valid**; the
+prior startup crash-loop was a non-segment-aware false positive, not corruption.
+See `docs/AUDIT-RECOVERY.md`.
+
+| # | Claim | Status | Evidence |
+|---|-------|--------|----------|
+| 1.13 | Segment-aware verifier classifies the chain (valid / empty / broken_tail / interior_corruption); genesis accepted only at a segment start, never mid-segment | Implemented | `orchestrator/audit_integrity.py` — `verify_path()` / `classify()` / `_segment_starts()`. CLI: `python -m audit_integrity verify --path <dir> [--report-json <out>]`. |
+| 1.14 | Startup audit gate is segment-aware over its bounded last-N window (unblocks legitimate genesis re-anchors; still fails real breaks) | Implemented | `orchestrator/startup_validator.py:_verify_tail_chain()` / `_check_hash_chain()` track file-boundary segment starts. Verified: live orchestrator starts on the real volume with audit_integrity enabled, no bypass. |
+| 1.15 | Explicit tail-repair quarantines a genuine torn-tail suffix and seals the valid prefix without deleting history | Implemented | `orchestrator/audit_integrity.py:repair_tail()` — byte-exact quarantine + repair manifest; refuses interior corruption and segment boundaries (fail closed). Runbook: `docs/AUDIT-RECOVERY.md`. |
+| 1.16 | Startup audit failure is fail-fast and actionable (no silent hang, no bypass env) | Implemented | `check_audit_integrity()` emits a classified `audit_integrity failed: …` message logged by `main.py`; e2e preflight in `tests/conftest.py` detects it and fails fast. Tests: `orchestrator/test_audit_integrity.py` (25). |
+
 ---
 
 ## Spec 2 — Capability Model (WAL → Permissions)

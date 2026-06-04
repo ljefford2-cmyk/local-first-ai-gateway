@@ -401,7 +401,11 @@ class TestAuditIntegrity:
             assert result.passed is False
             assert result.severity == "critical"
             assert result.details["hash_chain_intact"] is False
-            assert "hash chain broken" in result.message.lower()
+            # Patch 0C: failure message is now classified and actionable. A
+            # tampered middle record (with valid records after it) is interior
+            # corruption, not a torn tail.
+            assert "audit_integrity failed:" in result.message
+            assert result.details["audit_status"] == "interior_corruption"
 
     def test_empty_log_first_run_passes(self):
         """Empty audit log (first run) → initialize and pass."""

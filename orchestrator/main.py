@@ -147,8 +147,13 @@ async def lifespan(app: FastAPI):
             await audit_client.emit_durable(blocked_event)
         except Exception:
             logger.error("Could not emit startup_blocked event to audit log")
-        for name in validation_report.critical_failures:
-            logger.error("Startup validation CRITICAL failure: %s", name)
+        for check in validation_report.checks:
+            if not check.passed and check.severity == "critical":
+                logger.error(
+                    "Startup validation CRITICAL failure [%s]: %s",
+                    check.check_name,
+                    check.message,
+                )
         raise StartupValidationError(validation_report)
 
     # Emit startup_validated event

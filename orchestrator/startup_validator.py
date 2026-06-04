@@ -104,12 +104,19 @@ def _compute_hash(json_line: str) -> str:
     return hashlib.sha256(json_line.encode("utf-8")).hexdigest()
 
 
-def _verify_tail_chain(lines: list[str]) -> tuple[bool, int, str]:
-    """Verify hash chain on the last N lines of an audit log.
+def _verify_tail_chain(
+    lines: list[str], seg_starts: list[bool] | None = None
+) -> tuple[bool, int, str]:
+    """Verify hash chain on the last N lines of an audit log (segment-aware).
 
-    For a tail slice (not starting from genesis), we verify that each
-    event's prev_hash matches the hash of the previous line. The first
-    line in the slice is trusted as the anchor.
+    For a tail slice (not starting from genesis), we verify that each event's
+    prev_hash matches the hash of the previous line. The first line in the slice
+    is trusted as the anchor.
+
+    The audit log is segmented: the writer re-anchors at genesis when it opens a
+    new daily file after a gap. A genesis prev_hash is therefore accepted ONLY
+    at a segment start (the first record of a file, flagged in ``seg_starts``);
+    genesis anywhere else is a break. This is not "accept genesis anywhere".
 
     Returns (valid, break_index, message).
     """
@@ -119,13 +126,18 @@ def _verify_tail_chain(lines: list[str]) -> tuple[bool, int, str]:
     if len(lines) == 1:
         return True, -1, "Single event, chain trivially valid"
 
+    if seg_starts is None:
+        seg_starts = [False] * len(lines)
+
     for i in range(1, len(lines)):
-        expected = _compute_hash(lines[i - 1])
         try:
             event = json.loads(lines[i])
         except json.JSONDecodeError:
             return False, i, f"Event {i}: malformed JSON"
         actual = event.get("prev_hash")
+        if seg_starts[i] and actual == _GENESIS_HASH:
+            continue  # legitimate new-segment re-anchor at a file boundary
+        expected = _compute_hash(lines[i - 1])
         if actual != expected:
             return False, i, (
                 f"Event {i}: prev_hash mismatch. "
@@ -463,7 +475,22 @@ class StartupValidator:
         details["hash_chain_intact"] = chain_ok
         details["hash_chain_message"] = chain_msg
         if not chain_ok:
-            failures.append(f"Hash chain broken: {chain_msg}")
+            # Cold path only: classify the break from genesis (tail vs interior)
+            # and produce an actionable, fail-fast message. Still fail-closed —
+            # this enriches the diagnostics, it does not relax the gate.
+            import audit_integrity
+
+            report = audit_integrity.verify_path(self._config.audit_log_dir)
+            details["audit_status"] = report.status
+            details["records_valid"] = report.records_valid
+            details["first_invalid_record"] = report.first_invalid_record
+            details["last_valid_record"] = report.last_valid_record
+            details["repairable"] = report.repairable
+            failures.append(
+                audit_integrity.format_startup_failure(
+                    report, audit_path=self._config.audit_log_dir
+                )
+            )
 
         # 4. Append-only flag (best-effort)
         append_ok, append_msg = self._check_append_only(log_files)
@@ -522,6 +549,7 @@ class StartupValidator:
         """
         n = self._config.hash_chain_check_count
         all_lines: list[str] = []
+        seg_flags: list[bool] = []
 
         # Read from newest files first, collect up to N lines
         for f in reversed(log_files):
@@ -530,19 +558,26 @@ class StartupValidator:
                     file_lines = [
                         line.rstrip("\n") for line in fh if line.strip()
                     ]
-                all_lines = file_lines + all_lines
-                if len(all_lines) >= n:
-                    break
             except OSError:
                 continue
+            # The first record of each file is a segment-boundary candidate:
+            # the writer re-anchors at genesis when it opens a new file.
+            file_flags = [i == 0 for i in range(len(file_lines))]
+            all_lines = file_lines + all_lines
+            seg_flags = file_flags + seg_flags
+            if len(all_lines) >= n:
+                break
 
-        # Take the last N lines
-        tail = all_lines[-n:] if len(all_lines) > n else all_lines
+        # Take the last N lines (keeping the segment flags aligned)
+        if len(all_lines) > n:
+            tail, tail_flags = all_lines[-n:], seg_flags[-n:]
+        else:
+            tail, tail_flags = all_lines, seg_flags
 
         if not tail:
             return True, "No events to verify"
 
-        valid, break_idx, message = _verify_tail_chain(tail)
+        valid, break_idx, message = _verify_tail_chain(tail, tail_flags)
         return valid, message
 
     def _check_append_only(self, log_files: list[Path]) -> tuple[bool, str]:
