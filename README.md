@@ -1,18 +1,20 @@
 # Local-First AI Gateway
 
-> **DRNT Gateway v0.2.1** | Implementation repo
-> Canonical specs: [local-first-ai-orchestration](https://github.com/ljefford2-cmyk/local-first-ai-orchestration) (v7.0)
+> **DRNT Gateway v0.2.2 working state** | Personal-scale implementation and testbed
+> Architecture and specifications: [local-first-ai-orchestration](https://github.com/ljefford2-cmyk/local-first-ai-orchestration)
 > Claim-status matrix: [`STATUS.md`](STATUS.md)
+
+This repository implements and evaluates selected DRNT mechanisms within a single-operator personal system. It is evidence of what the stated code, tests, receipts, and observed behavior demonstrate at that scale. It is not evidence that the broader three-volume architecture is fully implemented or that the same mechanisms are qualified for enterprise operation.
 
 ## Repository Map
 
-This is the **working implementation** repo. It is one of three repositories in the DRNT project:
+This is the **personal-scale working implementation and testbed**. It sits within a broader project portfolio:
 
 | Repository | Role | Contents |
 |------------|------|----------|
 | **[local-first-ai-gateway](https://github.com/ljefford2-cmyk/local-first-ai-gateway)** (this repo) | Working implementation | All runtime code, Docker Compose stack, tests, config |
-| [local-first-ai-orchestration](https://github.com/ljefford2-cmyk/local-first-ai-orchestration) | Architecture specifications | DRNT specs 1–7, governance documents, design rationale |
-| [Local-AI-Orchestrator](https://github.com/ljefford2-cmyk/Local-AI-Orchestrator) | Historical / governance companion | Early-stage exploration, not the canonical implementation |
+| [local-first-ai-orchestration](https://github.com/ljefford2-cmyk/local-first-ai-orchestration) | Architectural authority and principal design corpus | Controlled three-volume architecture, DRNT specs, governance, publications, and design rationale |
+| [Local-AI-Orchestrator](https://github.com/ljefford2-cmyk/Local-AI-Orchestrator) | Historical precursor and NemoClaw/OpenShell outreach | Early exploration preserved for design history; not a current authority |
 
 The specifications live in `local-first-ai-orchestration`. The code that implements them lives here. If there is ever a conflict between a spec claim and what this repo contains, [`STATUS.md`](STATUS.md) is the source of truth for what is actually built.
 
@@ -65,7 +67,7 @@ Phase 4A.2 adds the gateway-side backend contract for a governed, human-in-the-l
 
 - Docker Compose multi-service deployment
 - Ollama with CUDA GPU passthrough for local model inference
-- Dual Docker networks: drnt-internal (service mesh) and drnt-external (cloud egress)
+- Three Docker networks: `drnt-internal` (service mesh), `drnt-external` (cloud egress), and internal-only `drnt-sandbox` (worker containment)
 
 ## Config
 
