@@ -4,7 +4,11 @@
 > Architecture and specifications: [local-first-ai-orchestration](https://github.com/ljefford2-cmyk/local-first-ai-orchestration)
 > Claim-status matrix: [`STATUS.md`](STATUS.md)
 
-This repository implements and evaluates selected DRNT mechanisms within a single-operator personal system. It is evidence of what the stated code, tests, receipts, and observed behavior demonstrate at that scale. It is not evidence that the broader three-volume architecture is fully implemented or that the same mechanisms are qualified for enterprise operation.
+This repository implements and evaluates selected DRNT mechanisms within a single-operator personal system. Those mechanisms are primitives such an assistant needs in order to be dependable: bounded context handling, permission and capability gating, egress control, isolated execution, override handling, and a sealed append-only record.
+
+It is evidence of what the stated code, tests, receipts, and observed behavior demonstrate at that scale. It is not the Ultimate AI Assistant implementation. It is not evidence that independent evaluation, enterprise-scale connection, or governed institutional learning are running. [P], [S], and [F] cannot be promoted by prose.
+
+`STATUS.md` is the source of truth for what is actually built here. Governance language must never outrun implementation evidence.
 
 ## Repository Map
 
